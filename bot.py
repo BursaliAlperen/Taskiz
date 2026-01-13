@@ -14,8 +14,8 @@ from typing import Optional, Dict, List, Tuple
 # Telegram Ayarları
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = os.environ.get("ADMIN_ID", "7904032877")
-MANDATORY_CHANNEL = os.environ.get("MANDATORY_CHANNEL", "GorevYapsamChat")
-REFERENCE_GROUP = os.environ.get("REFERENCE_GROUP", "GYReferans")  # Referans Kasma Grubu
+MANDATORY_CHANNEL = os.environ.get("MANDATORY_CHANNEL", "TaskizLive")
+STATS_CHANNEL = os.environ.get("STATS_CHANNEL", "TaskizLive")
 
 if not TOKEN:
     raise ValueError("Bot token gerekli!")
@@ -26,82 +26,89 @@ BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
 TURKEY_TZ = pytz.timezone('Europe/Istanbul')
 
 # TRX Ayarları
-TRX_ADDRESS = "TVJKGbdBQrbvQzq6WZhb3kaGa3LYgVrMSK"
-TRX_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price?ids=tron&vs_currencies=try"
-MIN_DEPOSIT_TRY = 25.0
-MAX_DEPOSIT_TRY = 200.0
-DEPOSIT_BONUS_PERCENT = 35
-MIN_WITHDRAW = 50.0  # Minimum çekim 50₺
+TRX_ADDRESS = "DEPOZIT_YAPILACAK_ADRES"  # Sonra verilecek
+TRX_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price?ids=tron&vs_currencies=usd"
+MIN_DEPOSIT_USD = 2.5  # Minimum depozit 2.5$
+MAX_DEPOSIT_USD = 10.0  # Maksimum depozit 10$
+DEPOSIT_BONUS_PERCENT = 0  # Bonus yok
 
-# Görev Ücretleri
-GROUP_TASK_PRICE = 0.5  # Grup görevi ücreti (Reklamveren öder)
-CHANNEL_TASK_PRICE = 1.25  # Kanal görevi ücreti (Reklamveren öder)
+# Görev Ücretleri (USD cinsinden)
+CHANNEL_TASK_PRICE = 0.03  # Kanal görevi
+GROUP_TASK_PRICE = 0.02    # Grup görevi  
+BOT_TASK_PRICE = 0.01      # Bot görevi
+
+# Minimum çekim
+MIN_WITHDRAW = 1.0  # Minimum çekim 1$
+
+# Referans bonusları
+REF_WELCOME_BONUS = 0.005  # Hoşgeldin bonusu 0.005$
+REF_TASK_COMMISSION = 0.25  # Görev başı %25 komisyon
 
 # Flask App
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return jsonify({"status": "online", "bot": "Görev Yapsam Bot v22.0"})
+    return jsonify({"status": "online", "bot": "TaskizBot v2.0"})
 
 def get_turkey_time():
     """Türkiye saatini döndür"""
     return datetime.now(TURKEY_TZ)
 
-# Referans Grubu Bildirim Sistemi
-class ReferenceGroupNotifier:
+# İstatistik Bildirim Sistemi
+class StatsNotifier:
     def __init__(self, db):
         self.db = db
-        self.last_notification_id = None
+        self.last_stats_message_id = None
         self.running = False
     
     def start(self):
         self.running = True
         threading.Thread(target=self.run, daemon=True).start()
-        print(f"📢 Referans grubu bildirim sistemi başlatıldı: @{REFERENCE_GROUP}")
+        print(f"📊 İstatistik bildirim sistemi başlatıldı: @{STATS_CHANNEL}")
     
     def run(self):
-        # Başlangıçta 5 saniye bekle
-        time.sleep(5)
+        # Başlangıçta 10 saniye bekle
+        time.sleep(10)
         
         while self.running:
             try:
-                self.update_reference_group()
-                time.sleep(180)  # Her 3 dakikada bir güncelle
+                self.update_stats_channel()
+                time.sleep(300)  # Her 5 dakikada bir güncelle
             except Exception as e:
-                print(f"❌ Referans grubu güncelleme hatası: {e}")
+                print(f"❌ İstatistik güncelleme hatası: {e}")
                 time.sleep(60)
     
-    def update_reference_group(self):
-        """Referans grubunu güncelle"""
+    def update_stats_channel(self):
+        """İstatistik kanalını güncelle"""
         try:
-            message = self.generate_reference_message()
+            stats_message = self.generate_stats_message()
             
-            if self.last_notification_id:
+            if self.last_stats_message_id:
                 # Mesajı düzenle
                 try:
-                    response = edit_message_text(f"@{REFERENCE_GROUP}", self.last_notification_id, message)
+                    response = edit_message_text(f"@{STATS_CHANNEL}", self.last_stats_message_id, stats_message)
                     if not response or not response.get('ok'):
                         # Mesaj silinmiş, yeni mesaj gönder
-                        self.send_new_message(message)
+                        self.send_new_stats_message(stats_message)
                 except:
                     # Hata olursa yeni mesaj gönder
-                    self.send_new_message(message)
+                    self.send_new_stats_message(stats_message)
             else:
                 # İlk mesajı gönder
-                self.send_new_message(message)
+                self.send_new_stats_message(stats_message)
                 
         except Exception as e:
-            print(f"❌ Referans grubu güncelleme hatası: {e}")
+            print(f"❌ İstatistik kanalı güncelleme hatası: {e}")
     
-    def send_new_message(self, message):
-        """Yeni referans mesajı gönder"""
-        response = send_message(f"@{REFERENCE_GROUP}", message)
+    def send_new_stats_message(self, message):
+        """Yeni istatistik mesajı gönder"""
+        response = send_message(f"@{STATS_CHANNEL}", message)
         if response and response.get('ok'):
-            self.last_notification_id = response['result']['message_id']
+            self.last_stats_message_id = response['result']['message_id']
     
-    def generate_reference_message(self):
-        """Referans grubu mesajı oluştur"""
+    def generate_stats_message(self):
+        """İstatistik mesajı oluştur"""
         now = get_turkey_time()
         
         # Toplam kullanıcı
@@ -137,14 +144,8 @@ class ReferenceGroupNotifier:
         today_deposit_amount = today_result[1] or 0
         
         # Bugünkü çekimler
-        self.db.cursor.execute('''
-            SELECT COUNT(*), SUM(amount) 
-            FROM withdrawals 
-            WHERE status = 'completed' AND created_at > ?
-        ''', (today_start,))
-        today_withdraw_result = self.db.cursor.fetchone()
-        today_withdrawals = today_withdraw_result[0] or 0
-        today_withdraw_amount = today_withdraw_result[1] or 0
+        today_withdrawals = 0
+        today_withdraw_amount = 0
         
         # Bugünkü görevler
         self.db.cursor.execute('''
@@ -174,147 +175,60 @@ class ReferenceGroupNotifier:
         total_deposit_amount = self.db.cursor.fetchone()[0] or 0
         
         # Toplam çekim
+        total_withdraw_amount = 0
+        
+        # Bugünkü referanslar
         self.db.cursor.execute('''
-            SELECT SUM(amount) 
-            FROM withdrawals 
-            WHERE status = 'completed'
+            SELECT COUNT(*) as ref_today
+            FROM users 
+            WHERE created_at > ? AND is_referred = 1
+        ''', (today_start,))
+        ref_today_result = self.db.cursor.fetchone()
+        ref_today = ref_today_result['ref_today'] if ref_today_result else 0
+        
+        # Toplam referans
+        self.db.cursor.execute('''
+            SELECT COUNT(*) as total_refs
+            FROM users 
+            WHERE is_referred = 1
         ''')
-        total_withdraw_amount = self.db.cursor.fetchone()[0] or 0
-        
-        # Son depozitler (bugünkü)
-        self.db.cursor.execute('''
-            SELECT d.*, u.name 
-            FROM deposits d 
-            LEFT JOIN users u ON d.user_id = u.user_id 
-            WHERE d.status = 'completed' AND DATE(d.completed_at) = DATE(?)
-            ORDER BY d.completed_at DESC 
-            LIMIT 5
-        ''', (now.isoformat(),))
-        recent_deposits = self.db.cursor.fetchall()
-        
-        # Son görevler (bugünkü)
-        self.db.cursor.execute('''
-            SELECT t.*, u.name as advertiser_name 
-            FROM tasks t 
-            LEFT JOIN users u ON t.advertiser_id = u.user_id 
-            WHERE DATE(t.created_at) = DATE(?)
-            ORDER BY t.created_at DESC 
-            LIMIT 5
-        ''', (now.isoformat(),))
-        recent_tasks = self.db.cursor.fetchall()
-        
-        # Son çekimler (bugünkü)
-        self.db.cursor.execute('''
-            SELECT w.*, u.name 
-            FROM withdrawals w 
-            LEFT JOIN users u ON w.user_id = u.user_id 
-            WHERE w.status = 'completed' AND DATE(w.completed_at) = DATE(?)
-            ORDER BY w.completed_at DESC 
-            LIMIT 5
-        ''', (now.isoformat(),))
-        recent_withdrawals = self.db.cursor.fetchall()
-        
-        # Son görev tamamlamalar (bugünkü)
-        self.db.cursor.execute('''
-            SELECT tp.*, u.name as participant_name, t.target_name
-            FROM task_participations tp
-            LEFT JOIN users u ON tp.user_id = u.user_id
-            LEFT JOIN tasks t ON tp.task_id = t.task_id
-            WHERE tp.status = 'verified' AND DATE(tp.paid_at) = DATE(?)
-            ORDER BY tp.paid_at DESC 
-            LIMIT 5
-        ''', (now.isoformat(),))
-        recent_task_completions = self.db.cursor.fetchall()
+        total_refs_result = self.db.cursor.fetchone()
+        total_refs = total_refs_result['total_refs'] if total_refs_result else 0
         
         # Mesaj oluştur
         message = f"""
-<b>📊 GÖREV YAPSAM BOT - REFERANS GRUBU</b>
-<b>⏰ Son Güncelleme:</b> {now.strftime('%d.%m.%Y %H:%M:%S')}
+<b>📊 TASKİZBOT İSTATİSTİKLERİ</b>
+<b>⏰ Son Güncelleme:</b> {now.strftime('%d.%m.%Y %H:%M')}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>👥 KULLANICI İSTATİSTİKLERİ</b>
 ├ <b>Toplam Kullanıcı:</b> {total_users}
 ├ <b>Aktif Kullanıcı (24s):</b> {active_users}
 ├ <b>Reklamverenler:</b> {total_advertisers}
-├ <b>Toplam Bakiye:</b> {total_balance:.2f}₺
-└ <b>Reklam Bakiyesi:</b> {total_ad_balance:.2f}₺
+├ <b>Bugünkü Referans:</b> {ref_today}
+└ <b>Toplam Referans:</b> {total_refs}
 
 <b>💰 FİNANSAL İSTATİSTİKLER</b>
-├ <b>Toplam Yatırım:</b> {total_deposit_amount:.2f}₺
-├ <b>Toplam Çekim:</b> {total_withdraw_amount:.2f}₺
-└ <b>Toplam Harcama:</b> {total_ad_balance:.2f}₺
+├ <b>Toplam Bakiye:</b> {total_balance:.2f}$
+├ <b>Reklamveren Bakiyesi:</b> {total_ad_balance:.2f}$
+├ <b>Toplam Yatırım:</b> {total_deposit_amount:.2f}$
+└ <b>Toplam Çekim:</b> {total_withdraw_amount:.2f}$
 
 <b>📈 BUGÜNKÜ İSTATİSTİKLER ({now.strftime('%d.%m.%Y')})</b>
-├ <b>Depozit:</b> {today_deposits} adet, {today_deposit_amount:.2f}₺
-├ <b>Çekim:</b> {today_withdrawals} adet, {today_withdraw_amount:.2f}₺
-├ <b>Görev:</b> {today_tasks} adet, {today_tasks_spent:.2f}₺
-└ <b>Kazanç:</b> {today_earnings:.2f}₺
-
-<b>💰 SON 5 DEPOZİT (BUGÜN)</b>
+├ <b>Depozit:</b> {today_deposits} adet, {today_deposit_amount:.2f}$
+├ <b>Çekim:</b> {today_withdrawals} adet, {today_withdraw_amount:.2f}$
+├ <b>Görev:</b> {today_tasks} adet, {today_tasks_spent:.2f}$
+└ <b>Kazanç:</b> {today_earnings:.2f}$
 """
-        
-        if recent_deposits:
-            for dep in recent_deposits:
-                user_name = dep['name'] or "Anonim"
-                deposit_type = "👑" if dep['deposit_type'] == 'advertiser' else "👤"
-                time_str = dep['completed_at'][11:16] if dep['completed_at'] else "??:??"
-                message += f"├ {deposit_type} <b>{user_name[:15]}</b>: {dep['amount_try']:.2f}₺ ({time_str})\n"
-            message += "└ ────────────────\n"
-        else:
-            message += "└ <i>Bugün depozit yok</i>\n"
-        
-        message += f"\n<b>💸 SON 5 ÇEKİM (BUGÜN)</b>\n"
-        if recent_withdrawals:
-            for wd in recent_withdrawals:
-                user_name = wd['name'] or "Anonim"
-                time_str = wd['completed_at'][11:16] if wd['completed_at'] else "??:??"
-                message += f"├ 👤 <b>{user_name[:15]}</b>: {wd['amount']:.2f}₺ ({time_str})\n"
-            message += "└ ────────────────\n"
-        else:
-            message += "└ <i>Bugün çekim yok</i>\n"
-        
-        message += f"\n<b>📢 SON 5 GÖREV (BUGÜN)</b>\n"
-        if recent_tasks:
-            for task in recent_tasks:
-                task_type = "👥" if task['task_type'] == 'group' else "📢"
-                advertiser_name = task['advertiser_name'] or "Anonim"
-                time_str = task['created_at'][11:16]
-                message += f"├ {task_type} <b>{advertiser_name[:15]}</b>: {task['reward_amount']:.2f}₺ ({time_str})\n"
-            message += "└ ────────────────\n"
-        else:
-            message += "└ <i>Bugün görev yok</i>\n"
-        
-        message += f"\n<b>✅ SON 5 GÖREV TAMAMLAMA (BUGÜN)</b>\n"
-        if recent_task_completions:
-            for comp in recent_task_completions:
-                participant_name = comp['participant_name'] or "Anonim"
-                time_str = comp['paid_at'][11:16] if comp['paid_at'] else "??:??"
-                message += f"├ 👤 <b>{participant_name[:15]}</b>: {comp['reward_paid']:.2f}₺ ({time_str})\n"
-            message += "└ ────────────────\n"
-        else:
-            message += "└ <i>Bugün görev tamamlama yok</i>\n"
-        
-        # Aktif kampanyalar
-        self.db.cursor.execute('''
-            SELECT * FROM campaigns 
-            WHERE status = 'active'
-            ORDER BY created_at DESC 
-            LIMIT 3
-        ''')
-        active_campaigns = self.db.cursor.fetchall()
-        
-        if active_campaigns:
-            message += f"\n<b>🎯 AKTİF KAMPANYALAR</b>\n"
-            for campaign in active_campaigns:
-                message += f"├ <b>{campaign['name']}</b>: {campaign['description'][:50]}...\n"
-            message += "└ ────────────────\n"
         
         message += f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-<b>🤖 BOT:</b> @GorevYapsamBot
-<b>💬 SOHBET:</b> @{MANDATORY_CHANNEL}
-<b>📢 REFERANS:</b> @{REFERENCE_GROUP}
-<b>🔄 GERÇEK ZAMANLI GÜNCELLENMEKTEDİR</b>
+<b>💡 REFERANS SİSTEMİ AKTİF!</b>
+<b>🎁 Referans Bonusu:</b> {REF_WELCOME_BONUS}$
+<b>📈 Görev Komisyonu:</b> %{REF_TASK_COMMISSION*100}
+<b>🤖 Bot:</b> @TaskizBot
+<b>💬 Sohbet:</b> @{MANDATORY_CHANNEL}
+<b>📊 İstatistik:</b> @{STATS_CHANNEL}
 """
         
         return message
@@ -332,18 +246,18 @@ class ReferenceGroupNotifier:
 {'👑 REKLAMVEREN' if deposit_type == 'advertiser' else '👤 KULLANICI'}
 
 <b>👤 Kullanıcı:</b> {user_name}
-<b>💰 Tutar:</b> {amount:.2f}₺
-<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M:%S')}
+<b>💰 Tutar:</b> {amount:.2f}$
+<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M')}
 
-{'💡 Reklamveren bakiyesine eklendi!' if deposit_type == 'advertiser' else '🎉 Bonuslu bakiye yüklendi!'}
+{'💡 Reklamveren bakiyesine eklendi!' if deposit_type == 'advertiser' else '🎉 Bakiye yüklendi!'}
 """
             
-            send_message(f"@{REFERENCE_GROUP}", message)
+            send_message(f"@{STATS_CHANNEL}", message)
             
         except Exception as e:
             print(f"❌ Depozit bildirimi hatası: {e}")
     
-    def notify_withdrawal(self, user_id, amount, withdrawal_id):
+    def notify_withdrawal(self, user_id, amount):
         """Çekim bildirimi gönder"""
         try:
             user = self.db.get_user(user_id)
@@ -354,14 +268,13 @@ class ReferenceGroupNotifier:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>👤 Kullanıcı:</b> {user_name}
-<b>💰 Tutar:</b> {amount:.2f}₺
-<b>📋 Talep ID:</b> {withdrawal_id[:10]}
-<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M:%S')}
+<b>💰 Tutar:</b> {amount:.2f}$
+<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M')}
 
 💡 Kullanıcı parasını çekti!
 """
             
-            send_message(f"@{REFERENCE_GROUP}", message)
+            send_message(f"@{STATS_CHANNEL}", message)
             
         except Exception as e:
             print(f"❌ Çekim bildirimi hatası: {e}")
@@ -382,7 +295,7 @@ class ReferenceGroupNotifier:
             task = self.db.cursor.fetchone()
             
             if task:
-                task_type = "👥 GRUP" if task['task_type'] == 'group' else "📢 KANAL"
+                task_type = "👥 GRUP" if task['task_type'] == 'group' else "📢 KANAL" if task['task_type'] == 'channel' else "🤖 BOT"
                 advertiser_name = task['advertiser_name'] or "Anonim"
                 
                 message = f"""
@@ -393,13 +306,13 @@ class ReferenceGroupNotifier:
 
 <b>👤 Katılımcı:</b> {user_name}
 <b>👑 Reklamveren:</b> {advertiser_name}
-<b>💰 Ödül:</b> {amount:.2f}₺
-<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M:%S')}
+<b>💰 Ödül:</b> {amount:.2f}$
+<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M')}
 
 💡 Kullanıcı görevi tamamladı ve ödülünü aldı!
 """
                 
-                send_message(f"@{REFERENCE_GROUP}", message)
+                send_message(f"@{STATS_CHANNEL}", message)
                 
         except Exception as e:
             print(f"❌ Görev bildirimi hatası: {e}")
@@ -417,7 +330,7 @@ class ReferenceGroupNotifier:
             task = self.db.cursor.fetchone()
             
             if task:
-                task_type = "👥 GRUP" if task['task_type'] == 'group' else "📢 KANAL"
+                task_type = "👥 GRUP" if task['task_type'] == 'group' else "📢 KANAL" if task['task_type'] == 'channel' else "🤖 BOT"
                 
                 message = f"""
 <b>📢 YENİ GÖREV OLUŞTURULDU!</b>
@@ -426,41 +339,40 @@ class ReferenceGroupNotifier:
 <b>{task_type} GÖREVİ</b>
 
 <b>👑 Reklamveren:</b> {user_name}
-<b>🎯 Hedef:</b> {task['target_name']}
-<b>💰 Ödül:</b> {task['reward_amount']:.2f}₺
+<b>💰 Ödül:</b> {task['reward_amount']:.2f}$
 <b>👥 Katılımcı:</b> {task['max_participants']} kişi
-<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M:%S')}
+<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M')}
 
 💡 Yeni görev oluşturuldu!
 """
                 
-                send_message(f"@{REFERENCE_GROUP}", message)
+                send_message(f"@{STATS_CHANNEL}", message)
                 
         except Exception as e:
             print(f"❌ Yeni görev bildirimi hatası: {e}")
     
-    def notify_withdrawal_completed(self, withdrawal_id, user_id, amount):
-        """Çekim tamamlama bildirimi"""
+    def notify_referral(self, referrer_name, referred_name):
+        """Referans bildirimi gönder"""
         try:
-            user = self.db.get_user(user_id)
-            user_name = user.get('name', 'Anonim')
-            
             message = f"""
-<b>✅ PARA ÇEKİMİ TAMAMLANDI!</b>
+<b>👤 YENİ REFERANS KAYDI!</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>👤 Kullanıcı:</b> {user_name}
-<b>💰 Tutar:</b> {amount:.2f}₺
-<b>📋 Talep ID:</b> {withdrawal_id[:10]}
-<b>⏰ Zaman:</b> {get_turkey_time().strftime('%H:%M:%S')}
+🎉 <b>Yeni kullanıcı referans sistemi ile kaydoldu!</b>
 
-💡 Çekim işlemi başarıyla tamamlandı!
+<b>📊 Detaylar:</b>
+• Referans Sahibi: {referrer_name}
+• Yeni Kullanıcı: {referred_name}
+• Kazanç: {REF_WELCOME_BONUS}$
+• Zaman: {get_turkey_time().strftime('%H:%M')}
+
+💡 <b>Referans sistemi aktif!</b>
 """
             
-            send_message(f"@{REFERENCE_GROUP}", message)
+            send_message(f"@{STATS_CHANNEL}", message)
             
         except Exception as e:
-            print(f"❌ Çekim tamamlama bildirimi hatası: {e}")
+            print(f"❌ Referans bildirimi hatası: {e}")
 
 # Database
 class Database:
@@ -478,8 +390,7 @@ class Database:
                 name TEXT,
                 username TEXT,
                 balance REAL DEFAULT 0.0,
-                ads_balance REAL DEFAULT 0.0,
-                normal_balance REAL DEFAULT 0.0,
+                ads_balance REAL DEFAULT 2.5,
                 total_earned REAL DEFAULT 0.0,
                 tasks_completed INTEGER DEFAULT 0,
                 referrals INTEGER DEFAULT 0,
@@ -503,12 +414,18 @@ class Database:
                 is_referred INTEGER DEFAULT 0,
                 ref_first_login INTEGER DEFAULT 0,
                 ref_link_used TEXT,
-                is_advertiser INTEGER DEFAULT 0,
-                advertiser_balance REAL DEFAULT 0.0,
+                is_advertiser INTEGER DEFAULT 1,
+                advertiser_balance REAL DEFAULT 2.5,
                 total_spent_on_ads REAL DEFAULT 0.0,
                 active_group_id TEXT,
                 active_channel_id TEXT,
-                last_join_check TEXT
+                last_join_check TEXT,
+                task_credits_channel INTEGER DEFAULT 0,
+                task_credits_group INTEGER DEFAULT 0,
+                task_credits_bot INTEGER DEFAULT 0,
+                ref_messages_enabled INTEGER DEFAULT 1,
+                pending_ref_commission REAL DEFAULT 0.0,
+                total_ref_commission REAL DEFAULT 0.0
             )
         ''')
         
@@ -518,6 +435,7 @@ class Database:
                 task_id TEXT PRIMARY KEY,
                 advertiser_id TEXT,
                 task_type TEXT,
+                task_subtype TEXT,
                 target_id TEXT,
                 target_name TEXT,
                 task_description TEXT,
@@ -528,7 +446,8 @@ class Database:
                 created_at TEXT,
                 completed_at TEXT,
                 total_spent REAL DEFAULT 0.0,
-                is_paid INTEGER DEFAULT 0
+                is_paid INTEGER DEFAULT 0,
+                payment_ratio TEXT DEFAULT '3/1'
             )
         ''')
         
@@ -544,6 +463,7 @@ class Database:
                 left_at TEXT,
                 reward_paid REAL DEFAULT 0.0,
                 paid_at TEXT,
+                commission_paid REAL DEFAULT 0.0,
                 FOREIGN KEY (task_id) REFERENCES tasks (task_id)
             )
         ''')
@@ -565,6 +485,24 @@ class Database:
             )
         ''')
         
+        # Komisyon kayıtları
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS commission_logs (
+                commission_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                referrer_id TEXT,
+                referred_id TEXT,
+                task_id TEXT,
+                amount REAL DEFAULT 0.0,
+                commission_rate REAL DEFAULT 0.25,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT,
+                completed_at TEXT,
+                FOREIGN KEY (referrer_id) REFERENCES users (user_id),
+                FOREIGN KEY (referred_id) REFERENCES users (user_id),
+                FOREIGN KEY (task_id) REFERENCES tasks (task_id)
+            )
+        ''')
+        
         # Çekimler
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS withdrawals (
@@ -575,8 +513,7 @@ class Database:
                 status TEXT DEFAULT 'pending',
                 created_at TEXT,
                 completed_at TEXT,
-                admin_notes TEXT,
-                txid TEXT
+                admin_notes TEXT
             )
         ''')
         
@@ -597,19 +534,6 @@ class Database:
             )
         ''')
         
-        # Kampanyalar
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS campaigns (
-                campaign_id TEXT PRIMARY KEY,
-                name TEXT,
-                description TEXT,
-                reward REAL,
-                status TEXT DEFAULT 'active',
-                created_at TEXT,
-                expires_at TEXT
-            )
-        ''')
-        
         self.conn.commit()
         print("✅ Veritabanı hazır")
     
@@ -621,9 +545,9 @@ class Database:
             now = get_turkey_time().isoformat()
             referral_code = f"ref_{user_id[-8:]}"
             self.cursor.execute('''
-                INSERT INTO users (user_id, name, balance, ads_balance, normal_balance, created_at, language, last_active, referral_code, last_notification_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (user_id, '', 0.0, 0.0, 0.0, now, 'tr', now, referral_code, now))
+                INSERT INTO users (user_id, name, balance, ads_balance, advertiser_balance, created_at, language, last_active, referral_code, last_notification_time, is_advertiser)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, '', 0.0, 2.5, 2.5, now, 'tr', now, referral_code, now, 1))
             self.conn.commit()
             
             self.cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -642,51 +566,33 @@ class Database:
         self.conn.commit()
         return True
     
-    def add_balance(self, user_id, amount, balance_type="normal", bonus_percent=0, source="system"):
-        """Bakiye ekle - balance_type: 'normal' veya 'advertiser'"""
+    def add_balance(self, user_id, amount, bonus_percent=0, source="system"):
         user = self.get_user(user_id)
+        bonus = amount * bonus_percent / 100
+        total = amount + bonus
+        new_balance = user.get('balance', 0) + total
         
-        if balance_type == "advertiser":
-            # Reklam bakiyesi ekle
-            bonus = amount * bonus_percent / 100
-            total = amount + bonus
-            new_balance = user.get('ads_balance', 0) + total
-            
-            self.cursor.execute('''
-                UPDATE users 
-                SET ads_balance = ?, total_deposited = total_deposited + ?
-                WHERE user_id = ?
-            ''', (new_balance, amount, user_id))
-            
-        else:
-            # Normal bakiye ekle
-            bonus = amount * bonus_percent / 100
-            total = amount + bonus
-            new_balance = user.get('balance', 0) + total
-            
-            self.cursor.execute('''
-                UPDATE users 
-                SET balance = ?, normal_balance = normal_balance + ?, total_earned = total_earned + ?, total_bonus = total_bonus + ? 
-                WHERE user_id = ?
-            ''', (new_balance, total, total, bonus, user_id))
-        
+        self.cursor.execute('''
+            UPDATE users 
+            SET balance = ?, total_earned = total_earned + ?, total_bonus = total_bonus + ? 
+            WHERE user_id = ?
+        ''', (new_balance, total, bonus, user_id))
         self.conn.commit()
         
         # Bakiye eklendi bildirimi
         if amount > 0:
-            balance_type_text = "reklam" if balance_type == "advertiser" else "normal"
             source_text = "sistem" if source == "system" else "referans"
             message = f"""
-<b>💰 {balance_type_text.upper()} BAKİYE EKLENDİ</b>
+<b>💰 BAKİYE EKLENDİ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🎉 <b>+{total:.2f}₺ {balance_type_text} bakiyenize eklendi!</b>
+🎉 <b>+{total:.3f}$ bakiyenize eklendi!</b>
 
 📊 <b>Detaylar:</b>
 • Kaynak: {source_text}
-• Tutar: {amount:.2f}₺
-• Bonus: {bonus:.2f}₺ (%{bonus_percent})
-• Yeni {balance_type_text.capitalize()} Bakiye: {new_balance:.2f}₺
+• Tutar: {amount:.3f}$
+• Bonus: {bonus:.3f}$
+• Yeni Bakiye: {new_balance:.3f}$
 
 💡 <b>Hemen görev yapmaya başlayın!</b>
 """
@@ -694,56 +600,24 @@ class Database:
         
         return True
     
-    def convert_balance(self, user_id, amount, from_type, to_type):
-        """Bakiye dönüştür - reklam bakiyesini normal bakiyeye veya tam tersi"""
-        user = self.get_user(user_id)
-        
-        if from_type == "advertiser" and to_type == "normal":
-            # Reklam bakiyesinden normal bakiyeye
-            if user.get('ads_balance', 0) < amount:
-                return False, "Yetersiz reklam bakiyesi!"
-            
-            new_ad_balance = user.get('ads_balance', 0) - amount
-            new_normal_balance = user.get('normal_balance', 0) + amount
-            
-            self.cursor.execute('''
-                UPDATE users 
-                SET ads_balance = ?, normal_balance = ?, balance = normal_balance
-                WHERE user_id = ?
-            ''', (new_ad_balance, new_normal_balance, user_id))
-            
-            message = f"✅ {amount:.2f}₺ reklam bakiyesi normal bakiyeye dönüştürüldü!"
-            
-        elif from_type == "normal" and to_type == "advertiser":
-            # Normal bakiyeden reklam bakiyesine
-            if user.get('normal_balance', 0) < amount:
-                return False, "Yetersiz normal bakiye!"
-            
-            new_normal_balance = user.get('normal_balance', 0) - amount
-            new_ad_balance = user.get('ads_balance', 0) + amount
-            
-            self.cursor.execute('''
-                UPDATE users 
-                SET normal_balance = ?, ads_balance = ?, balance = normal_balance
-                WHERE user_id = ?
-            ''', (new_normal_balance, new_ad_balance, user_id))
-            
-            message = f"✅ {amount:.2f}₺ normal bakiye reklam bakiyesine dönüştürüldü!"
-        
-        else:
-            return False, "Geçersiz dönüşüm türü!"
-        
-        self.conn.commit()
-        return True, message
-    
     def add_advertiser_balance(self, user_id, amount):
         """Reklamveren bakiyesine ekle"""
-        return self.add_balance(user_id, amount, "advertiser", 0, "deposit")
+        user = self.get_user(user_id)
+        new_balance = user.get('advertiser_balance', 0) + amount
+        
+        self.cursor.execute('''
+            UPDATE users 
+            SET advertiser_balance = ?, total_deposited = total_deposited + ?
+            WHERE user_id = ?
+        ''', (new_balance, amount, user_id))
+        self.conn.commit()
+        
+        return True
     
     def deduct_advertiser_balance(self, user_id, amount):
         """Reklamveren bakiyesinden düş"""
         user = self.get_user(user_id)
-        current_balance = user.get('ads_balance', 0)
+        current_balance = user.get('advertiser_balance', 0)
         
         if current_balance < amount:
             return False, "Yetersiz reklamveren bakiyesi!"
@@ -752,23 +626,23 @@ class Database:
         
         self.cursor.execute('''
             UPDATE users 
-            SET ads_balance = ?, total_spent_on_ads = total_spent_on_ads + ?
+            SET advertiser_balance = ?, total_spent_on_ads = total_spent_on_ads + ?
             WHERE user_id = ?
         ''', (new_balance, amount, user_id))
         self.conn.commit()
         
-        return True, f"{amount:.2f}₺ reklamveren bakiyenizden düşüldü"
+        return True, f"{amount:.3f}$ reklamveren bakiyenizden düşüldü"
     
-    def create_task(self, advertiser_id, task_type, target_id, target_name, description, reward, max_participants):
+    def create_task(self, advertiser_id, task_type, task_subtype, target_id, target_name, description, reward, max_participants):
         """Yeni görev oluştur"""
         task_id = hashlib.md5(f"{advertiser_id}{target_id}{time.time()}".encode()).hexdigest()[:10].upper()
         now = get_turkey_time().isoformat()
         
         self.cursor.execute('''
-            INSERT INTO tasks (task_id, advertiser_id, task_type, target_id, target_name, 
+            INSERT INTO tasks (task_id, advertiser_id, task_type, task_subtype, target_id, target_name, 
                              task_description, reward_amount, max_participants, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (task_id, advertiser_id, task_type, target_id, target_name, 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (task_id, advertiser_id, task_type, task_subtype, target_id, target_name, 
               description, reward, max_participants, now))
         self.conn.commit()
         
@@ -823,7 +697,7 @@ class Database:
         
         # Reklamveren bakiyesini kontrol et
         advertiser = self.get_user(participation['advertiser_id'])
-        if advertiser.get('ads_balance', 0) < participation['reward_amount']:
+        if advertiser.get('advertiser_balance', 0) < participation['reward_amount']:
             return False, "Reklamveren bakiyesi yetersiz!"
         
         # Reklamveren bakiyesinden düş
@@ -841,9 +715,43 @@ class Database:
         
         self.cursor.execute('''
             UPDATE users 
-            SET balance = ?, normal_balance = normal_balance + ?, tasks_completed = tasks_completed + 1, total_earned = total_earned + ?
+            SET balance = ?, tasks_completed = tasks_completed + 1, total_earned = total_earned + ?
             WHERE user_id = ?
-        ''', (new_balance, participation['reward_amount'], participation['reward_amount'], participation['user_id']))
+        ''', (new_balance, participation['reward_amount'], participation['user_id']))
+        
+        # Referans komisyonu öde (varsa)
+        commission_amount = participation['reward_amount'] * REF_TASK_COMMISSION
+        if user.get('referred_by'):
+            referrer = self.get_user(user['referred_by'])
+            if referrer:
+                # Komisyon kaydı oluştur
+                self.cursor.execute('''
+                    INSERT INTO commission_logs (referrer_id, referred_id, task_id, amount, commission_rate, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user['referred_by'], participation['user_id'], participation['task_id'], commission_amount, REF_TASK_COMMISSION, now))
+                
+                # Referansa komisyon öde
+                referrer_new_balance = referrer.get('balance', 0) + commission_amount
+                self.cursor.execute('''
+                    UPDATE users 
+                    SET balance = ?, total_ref_commission = total_ref_commission + ?, ref_earned = ref_earned + ?
+                    WHERE user_id = ?
+                ''', (referrer_new_balance, commission_amount, commission_amount, user['referred_by']))
+                
+                # Komisyonu tamamla
+                commission_id = self.cursor.lastrowid
+                self.cursor.execute('''
+                    UPDATE commission_logs 
+                    SET status = 'completed', completed_at = ?
+                    WHERE commission_id = ?
+                ''', (now, commission_id))
+                
+                # Katılım kaydına komisyon bilgisini ekle
+                self.cursor.execute('''
+                    UPDATE task_participations 
+                    SET commission_paid = ?
+                    WHERE participation_id = ?
+                ''', (commission_amount, participation_id))
         
         # Katılımı güncelle
         self.cursor.execute('''
@@ -861,7 +769,7 @@ class Database:
         
         self.conn.commit()
         
-        return True, f"{participation['reward_amount']:.2f}₺ ödendi"
+        return True, f"{participation['reward_amount']:.3f}$ ödendi"
     
     def create_withdrawal(self, user_id, amount, trx_address):
         """Para çekme talebi oluştur"""
@@ -875,36 +783,6 @@ class Database:
         self.conn.commit()
         
         return withdrawal_id
-    
-    def complete_withdrawal(self, withdrawal_id, txid):
-        """Para çekme işlemini tamamla"""
-        now = get_turkey_time().isoformat()
-        
-        # Çekim bilgilerini al
-        self.cursor.execute('''
-            SELECT * FROM withdrawals WHERE withdrawal_id = ?
-        ''', (withdrawal_id,))
-        withdrawal = self.cursor.fetchone()
-        
-        if not withdrawal:
-            return False, "Çekim bulunamadı"
-        
-        # Kullanıcıyı güncelle
-        self.cursor.execute('''
-            UPDATE users 
-            SET total_withdrawn = total_withdrawn + ?, withdraw_count = withdraw_count + 1
-            WHERE user_id = ?
-        ''', (withdrawal['amount'], withdrawal['user_id']))
-        
-        # Çekimi tamamla
-        self.cursor.execute('''
-            UPDATE withdrawals 
-            SET status = 'completed', completed_at = ?, txid = ?
-            WHERE withdrawal_id = ?
-        ''', (now, txid, withdrawal_id))
-        
-        self.conn.commit()
-        return True, f"{withdrawal['amount']:.2f}₺ çekim tamamlandı"
     
     def check_referral_usage(self, user_id, referral_code):
         """Kullanıcının bu referans kodunu daha önce kullanıp kullanmadığını kontrol et"""
@@ -1007,21 +885,21 @@ def check_bot_admin(chat_id):
 class BotSystem:
     def __init__(self):
         self.db = Database()
-        self.reference_notifier = ReferenceGroupNotifier(self.db)
+        self.stats_notifier = StatsNotifier(self.db)
         self.user_states = {}
-        self.trx_price = 12.61
+        self.trx_price = 0.12  # Varsayılan TRX fiyatı (USD)
         self.update_trx_price()
         self.background_checker = BackgroundChecker(self.db)
         self.background_checker.start()
-        self.reference_notifier.start()
-        print("🤖 Bot sistemi başlatıldı")
+        self.stats_notifier.start()
+        print("🤖 TaskizBot sistemi başlatıldı")
     
     def update_trx_price(self):
         try:
             response = requests.get(TRX_PRICE_URL, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                self.trx_price = data.get('tron', {}).get('try', 12.61)
+                self.trx_price = data.get('tron', {}).get('usd', 0.12)
         except: 
             pass
     
@@ -1084,13 +962,13 @@ class BotSystem:
                             # Grup için işlem yap
                             deducted, amount = self.handle_user_left_group(user_id, chat_id)
                             if deducted:
-                                print(f"✅ {user_id} kullanıcısından {amount}₺ düşüldü (gruptan ayrılma)")
+                                print(f"✅ {user_id} kullanıcısından {amount}$ düşüldü (gruptan ayrılma)")
                         
                         elif chat_type == 'channel':
                             # Kanal için işlem yap
                             deducted, amount = self.handle_user_left_channel(user_id, chat_id)
                             if deducted:
-                                print(f"✅ {user_id} kullanıcısından {amount}₺ düşüldü (kanaldan ayrılma)")
+                                print(f"✅ {user_id} kullanıcısından {amount}$ düşüldü (kanaldan ayrılma)")
                         
                         # Zorunlu kanal kontrolü
                         if f"@{MANDATORY_CHANNEL}" in chat_info.get('username', ''):
@@ -1144,17 +1022,15 @@ class BotSystem:
             user = self.db.get_user(user_id)
             if user.get('balance', 0) >= participation['reward_amount']:
                 new_balance = user.get('balance', 0) - participation['reward_amount']
-                new_normal_balance = user.get('normal_balance', 0) - participation['reward_amount']
-                
                 self.db.cursor.execute('''
-                    UPDATE users SET balance = ?, normal_balance = ?, total_earned = total_earned - ? WHERE user_id = ?
-                ''', (new_balance, new_normal_balance, participation['reward_amount'], user_id))
+                    UPDATE users SET balance = ?, total_earned = total_earned - ? WHERE user_id = ?
+                ''', (new_balance, participation['reward_amount'], user_id))
                 
                 # Reklamverene iade
                 advertiser = self.db.get_user(participation['advertiser_id'])
-                new_ad_balance = advertiser.get('ads_balance', 0) + participation['reward_amount']
+                new_ad_balance = advertiser.get('advertiser_balance', 0) + participation['reward_amount']
                 self.db.cursor.execute('''
-                    UPDATE users SET ads_balance = ?, total_spent_on_ads = total_spent_on_ads - ?
+                    UPDATE users SET advertiser_balance = ?, total_spent_on_ads = total_spent_on_ads - ?
                     WHERE user_id = ?
                 ''', (new_ad_balance, participation['reward_amount'], participation['advertiser_id']))
                 
@@ -1173,7 +1049,7 @@ class BotSystem:
 <b>⚠️ GRUPTAN AYRILMA CEZASI</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-❌ <b>{participation['reward_amount']:.2f}₺ bakiyenizden düşüldü!</b>
+❌ <b>{participation['reward_amount']:.3f}$ bakiyenizden düşüldü!</b>
 
 📊 <b>Sebep:</b>
 • Grubu terk ettiğiniz için
@@ -1204,17 +1080,15 @@ class BotSystem:
             user = self.db.get_user(user_id)
             if user.get('balance', 0) >= participation['reward_amount']:
                 new_balance = user.get('balance', 0) - participation['reward_amount']
-                new_normal_balance = user.get('normal_balance', 0) - participation['reward_amount']
-                
                 self.db.cursor.execute('''
-                    UPDATE users SET balance = ?, normal_balance = ?, total_earned = total_earned - ? WHERE user_id = ?
-                ''', (new_balance, new_normal_balance, participation['reward_amount'], user_id))
+                    UPDATE users SET balance = ?, total_earned = total_earned - ? WHERE user_id = ?
+                ''', (new_balance, participation['reward_amount'], user_id))
                 
                 # Reklamverene iade
                 advertiser = self.db.get_user(participation['advertiser_id'])
-                new_ad_balance = advertiser.get('ads_balance', 0) + participation['reward_amount']
+                new_ad_balance = advertiser.get('advertiser_balance', 0) + participation['reward_amount']
                 self.db.cursor.execute('''
-                    UPDATE users SET ads_balance = ?, total_spent_on_ads = total_spent_on_ads - ?
+                    UPDATE users SET advertiser_balance = ?, total_spent_on_ads = total_spent_on_ads - ?
                     WHERE user_id = ?
                 ''', (new_ad_balance, participation['reward_amount'], participation['advertiser_id']))
                 
@@ -1233,7 +1107,7 @@ class BotSystem:
 <b>⚠️ KANALDAN AYRILMA CEZASI</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-❌ <b>{participation['reward_amount']:.2f}₺ bakiyenizden düşüldü!</b>
+❌ <b>{participation['reward_amount']:.3f}$ bakiyenizden düşüldü!</b>
 
 📊 <b>Sebep:</b>
 • Kanalı terk ettiğiniz için
@@ -1272,9 +1146,6 @@ class BotSystem:
                     return
                 elif text == '/istatistik':
                     self.show_user_stats(user_id)
-                    return
-                elif text == '/referans':
-                    self.show_referral_menu(user_id)
                     return
             
             user_state = self.get_user_state(user_id)
@@ -1333,8 +1204,6 @@ class BotSystem:
                 self.show_advertiser_menu(user_id)
             elif data == 'stats':
                 self.show_user_stats(user_id)
-            elif data == 'convert_balance':
-                self.show_convert_balance_menu(user_id)
             
             # Reklamveren butonları
             elif data == 'advertiser_deposit':
@@ -1350,16 +1219,18 @@ class BotSystem:
             elif data == 'toggle_advertiser':
                 self.toggle_advertiser_mode(user_id)
             
-            # Bakiye dönüşüm butonları
-            elif data == 'convert_to_normal':
-                self.start_convert_balance(user_id, 'to_normal')
-            elif data == 'convert_to_ads':
-                self.start_convert_balance(user_id, 'to_ads')
-            
             # Görev türü
             elif data.startswith('task_type_'):
                 task_type = data.replace('task_type_', '')
                 self.handle_task_type_selection(user_id, task_type)
+            
+            # Bot alt türü
+            elif data.startswith('bot_subtype_'):
+                # Bu durumda message formatında işlem yap
+                fake_message = {'callback_query': {'data': data}}
+                user_state = self.get_user_state(user_id)
+                if user_state['state'] == 'create_task':
+                    self.handle_user_state(user_id, fake_message, user_state)
             
             # Depozit tutarları
             elif data.startswith('deposit_amount_'):
@@ -1426,14 +1297,16 @@ class BotSystem:
                 ]]
             }
             send_message(user_id, f"""
-<b>🤖 GÖREV YAPSAM BOT</b>
+<b>🤖 TASKİZBOT</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 <b>Botu kullanmak için sohbet kanalına katılın:</b>
 👉 @{MANDATORY_CHANNEL}
 
-📢 <b>Referans Grubu:</b>
-👉 @{REFERENCE_GROUP}
+📊 <b>İstatistik Kanalı:</b>
+👉 @{STATS_CHANNEL}
+
+💰 <b>Varsayılan Reklam Bakiye:</b> 2.5$
 
 💡 <b>Katıldıktan sonra "Katıldım" butonuna basın</b>
 """, markup)
@@ -1441,13 +1314,12 @@ class BotSystem:
         
         user = self.db.get_user(user_id)
         
-        # Hoşgeldin bonusu
+        # Hoşgeldin bonusu (ilk kayıtta)
         if not user.get('welcome_bonus'):
-            # Önce referans kontrolü yap
-            ref_code_used = None
+            # Referans kontrolü yap
             is_referred = 0
-            ref_first_login = 0
             referrer_id = None
+            ref_code = None
             
             if ' ' in text:
                 parts = text.split()
@@ -1462,74 +1334,77 @@ class BotSystem:
                             if not self.db.check_referral_usage(user_id, ref_code):
                                 # İlk defa bu referansla geliyor
                                 is_referred = 1
-                                ref_first_login = 1
-                                ref_code_used = ref_code
                                 
                                 # Referans kaydını logla
-                                referral_link = f"https://t.me/GorevYapsamBot?start={ref_code}"
-                                log_id = self.db.record_referral(referrer_id, user_id, referral_link, 1.0)
+                                referral_link = f"https://t.me/TaskizBot?start={ref_code}"
+                                log_id = self.db.record_referral(referrer_id, user_id, referral_link, REF_WELCOME_BONUS)
                                 
                                 # Referans sahibine bonus ekle
-                                self.db.add_balance(referrer_id, 1.0, "normal", 0, "referral")
+                                self.db.add_balance(referrer_id, REF_WELCOME_BONUS, 0, "referral")
                                 self.db.update_user(referrer_id, {
                                     'referrals': referrer.get('referrals', 0) + 1,
-                                    'ref_earned': referrer.get('ref_earned', 0) + 1.0
+                                    'ref_earned': referrer.get('ref_earned', 0) + REF_WELCOME_BONUS
                                 })
                                 
                                 # Referansı tamamla
                                 self.db.complete_referral(log_id, "welcome")
                                 
                                 # Referans bildirimi gönder
-                                send_message(referrer_id, f"""
-<b>🎉 REFERANS KAZANCI!</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-👤 <b>Yeni referansınız:</b> {user.get('name', 'Kullanıcı')}
-💰 <b>Kazandınız:</b> 1.00₺
-📊 <b>Toplam referans:</b> {referrer.get('referrals', 0) + 1}
-
-💡 <b>Referans linkinizi paylaşmaya devam edin!</b>
-""")
+                                self.stats_notifier.notify_referral(
+                                    referrer.get('name', 'Anonim'),
+                                    user.get('name', 'Kullanıcı')
+                                )
             
-            # Hoşgeldin bonusunu ver
-            self.db.add_balance(user_id, 2.0, "normal", 0, "welcome_bonus")
+            # Kullanıcıyı güncelle
             self.db.update_user(user_id, {
                 'welcome_bonus': 1, 
                 'in_channel': 1,
                 'is_referred': is_referred,
-                'ref_first_login': ref_first_login,
-                'ref_link_used': ref_code_used,
-                'referred_by': referrer_id if is_referred else None
+                'referred_by': referrer_id if is_referred else None,
+                'ref_link_used': ref_code if is_referred else None,
+                'ads_balance': 2.5,
+                'advertiser_balance': 2.5,
+                'is_advertiser': 1
             })
             
-            # Referans ile geldiyse ekstra mesaj gönder
+            # Hoşgeldin mesajı
             if is_referred:
-                send_message(user_id, f"""
+                message = f"""
 <b>🎉 HOŞ GELDİNİZ!</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-✅ <b>2₺ hoşgeldin bonusu hesabınıza yüklendi!</b>
+✅ <b>2.5$ reklam bakiyesi hesabınıza yüklendi!</b>
+👑 <b>Reklamveren modu aktif edildi!</b>
+
 👥 <b>Referans ile kaydoldunuz!</b>
-💰 <b>Referans sahibine 1₺ bonus yüklendi!</b>
+💰 <b>Referans sahibine {REF_WELCOME_BONUS}$ bonus yüklendi!</b>
 
-💬 <b>Sohbet Kanalı:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans Grubu:</b> @{REFERENCE_GROUP}
+📈 <b>Artık her görevde %{REF_TASK_COMMISSION*100} komisyon kazanacaksınız!</b>
 
-💡 <b>Hemen görev yapmaya başlayabilirsiniz!</b>
-""")
+💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
+
+💡 <b>Hemen reklam vermeye başlayabilirsiniz!</b>
+"""
             else:
-                send_message(user_id, f"""
+                message = f"""
 <b>🎉 HOŞ GELDİNİZ!</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-✅ <b>2₺ hoşgeldin bonusu hesabınıza yüklendi!</b>
-💰 <b>Hemen görev yapmaya başlayabilirsiniz!</b>
+✅ <b>2.5$ reklam bakiyesi hesabınıza yüklendi!</b>
+👑 <b>Reklamveren modu aktif edildi!</b>
 
-💬 <b>Sohbet Kanalı:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans Grubu:</b> @{REFERENCE_GROUP}
+💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 👥 <b>Referans linkinizi paylaşarak daha fazla kazanın!</b>
-""")
+• Her referans: {REF_WELCOME_BONUS}$
+• Görev komisyonu: %{REF_TASK_COMMISSION*100}
+
+💡 <b>Hemen reklam vermeye başlayabilirsiniz!</b>
+"""
+            
+            send_message(user_id, message)
         
         # Eğer zaten kayıtlıysa ve referans linki ile gelmişse
         elif ' ' in text and user.get('is_referred') == 0:
@@ -1544,14 +1419,14 @@ class BotSystem:
                         referrer = self.db.get_user(referrer_id)
                         if referrer:
                             # Referans kaydını logla
-                            referral_link = f"https://t.me/GorevYapsamBot?start={ref_code}"
-                            log_id = self.db.record_referral(referrer_id, user_id, referral_link, 0.5)
+                            referral_link = f"https://t.me/TaskizBot?start={ref_code}"
+                            log_id = self.db.record_referral(referrer_id, user_id, referral_link, REF_WELCOME_BONUS)
                             
-                            # Referans sahibine bonus ekle (daha az bonus)
-                            self.db.add_balance(referrer_id, 0.5, "normal", 0, "referral_late")
+                            # Referans sahibine bonus ekle
+                            self.db.add_balance(referrer_id, REF_WELCOME_BONUS, 0, "referral_late")
                             self.db.update_user(referrer_id, {
                                 'referrals': referrer.get('referrals', 0) + 1,
-                                'ref_earned': referrer.get('ref_earned', 0) + 0.5
+                                'ref_earned': referrer.get('ref_earned', 0) + REF_WELCOME_BONUS
                             })
                             
                             # Referansı tamamla
@@ -1564,16 +1439,28 @@ class BotSystem:
                                 'referred_by': referrer_id
                             })
                             
-                            # Bildirim gönder
-                            send_message(referrer_id, f"""
-<b>🎉 GEÇ KATILIM REFERANS KAZANCI!</b>
+                            # Referans bildirimi gönder
+                            self.stats_notifier.notify_referral(
+                                referrer.get('name', 'Anonim'),
+                                user.get('name', 'Kullanıcı')
+                            )
+                            
+                            # Kullanıcıya bildirim
+                            send_message(user_id, f"""
+<b>🎉 REFERANS SİSTEMİNE KATILDINIZ!</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-👤 <b>Yeni geç katılım referansınız:</b> {user.get('name', 'Kullanıcı')}
-💰 <b>Kazandınız:</b> 0.50₺
-📊 <b>Toplam referans:</b> {referrer.get('referrals', 0) + 1}
+👥 <b>Referans ile sisteme bağlandınız!</b>
 
-💡 <b>Referans linkinizi paylaşmaya devam edin!</b>
+📊 <b>Detaylar:</b>
+• Referans Sahibi: {referrer.get('name', 'Anonim')}
+• Kazanç: {REF_WELCOME_BONUS}$ (referans sahibine)
+• Komisyon: %{REF_TASK_COMMISSION*100} her görevde
+
+💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
+
+💡 <b>Artık her görevde komisyon kazanacaksınız!</b>
 """)
         
         self.show_main_menu(user_id)
@@ -1599,8 +1486,8 @@ class BotSystem:
 💬 <b>Botu kullanmak için:</b>
 👉 @{MANDATORY_CHANNEL}
 
-📢 <b>Referans Grubu:</b>
-👉 @{REFERENCE_GROUP}
+📊 <b>İstatistikler:</b>
+👉 @{STATS_CHANNEL}
 
 💡 <b>Katıldıktan sonra "Katıldım" butonuna basın</b>
 """, markup)
@@ -1608,27 +1495,23 @@ class BotSystem:
         
         # Reklamveren modunu kontrol et
         is_advertiser = user.get('is_advertiser', 0)
-        advertiser_text = "\n<b>👑 Reklamveren Modu:</b> Aktif" if is_advertiser else ""
+        advertiser_text = f"\n<b>👑 Reklamveren Bakiye:</b> <code>{user.get('advertiser_balance', 0):.3f}$</code>" if is_advertiser else ""
         
-        # Normal ve reklam bakiyesi göster
-        normal_balance = user.get('normal_balance', 0)
-        ads_balance = user.get('ads_balance', 0)
-        total_balance = user.get('balance', 0)
+        # Referans durumu
+        ref_text = f"\n<b>👥 Referans Kazancı:</b> {user.get('ref_earned', 0):.3f}$" if user.get('is_referred', 0) else ""
         
         message = f"""
-<b>🤖 GÖREV YAPSAM BOT</b>
+<b>🤖 TASKİZBOT</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>👤 Hoş geldin</b> {user.get('name', 'Kullanıcı')}!
-<b>💰 Normal Bakiye:</b> <code>{normal_balance:.2f}₺</code>
-<b>📢 Reklam Bakiye:</b> <code>{ads_balance:.2f}₺</code>
-<b>💳 Toplam Bakiye:</b> <code>{total_balance:.2f}₺</code>{advertiser_text}
+<b>💰 Bakiye:</b> <code>{user.get('balance', 0):.3f}$</code>{advertiser_text}
 
 <b>🎯 Tamamlanan Görev:</b> {user.get('tasks_completed', 0)}
-<b>👥 Referans:</b> {user.get('referrals', 0)}
+<b>👥 Referans:</b> {user.get('referrals', 0)}{ref_text}
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 <b>📋 ANA MENÜ</b>
@@ -1645,27 +1528,28 @@ class BotSystem:
                     {'text': '📊 İstatistik', 'callback_data': 'stats'}
                 ],
                 [
-                    {'text': '🔄 Bakiye Dönüştür', 'callback_data': 'convert_balance'},
-                    {'text': '👤 Profil', 'callback_data': 'profile'}
-                ],
-                [
-                    {'text': '👥 Referans', 'callback_data': 'referral'},
-                    {'text': '❓ Yardım', 'callback_data': 'help'}
+                    {'text': '👤 Profil', 'callback_data': 'profile'},
+                    {'text': '👥 Referans', 'callback_data': 'referral'}
                 ]
             ]
         }
         
         # Reklamveren butonu
         if is_advertiser:
-            markup['inline_keyboard'].insert(3, [
+            markup['inline_keyboard'].insert(2, [
                 {'text': '📢 Reklamveren', 'callback_data': 'advertiser_menu'}
             ])
         else:
-            markup['inline_keyboard'].insert(3, [
+            markup['inline_keyboard'].insert(2, [
                 {'text': '👑 Reklamveren Ol', 'callback_data': 'toggle_advertiser'}
             ])
         
-        # Admin butonu
+        # Yardım ve admin butonları
+        markup['inline_keyboard'].append([
+            {'text': '❓ Yardım', 'callback_data': 'help'},
+            {'text': '📋 Menü', 'callback_data': 'menu'}
+        ])
+        
         if user_id == ADMIN_ID:
             markup['inline_keyboard'].append([
                 {'text': '👑 Admin Panel', 'callback_data': 'admin_panel'}
@@ -1673,118 +1557,9 @@ class BotSystem:
         
         send_message(user_id, message, markup)
     
-    def show_convert_balance_menu(self, user_id):
-        """Bakiye dönüşüm menüsü"""
-        user = self.db.get_user(user_id)
-        
-        normal_balance = user.get('normal_balance', 0)
-        ads_balance = user.get('ads_balance', 0)
-        
-        message = f"""
-<b>🔄 BAKİYE DÖNÜŞTÜRME</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-<b>💰 Mevcut Bakiyeleriniz:</b>
-• Normal Bakiye: {normal_balance:.2f}₺
-• Reklam Bakiye: {ads_balance:.2f}₺
-
-<b>💡 Bakiye Dönüşümü:</b>
-• Normal bakiye ile görev yapabilir, para çekebilirsiniz
-• Reklam bakiyesi ile reklam verebilirsiniz
-• Bakiyelerinizi birbirine dönüştürebilirsiniz
-
-💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
-
-<b>👇 Dönüşüm Türünü Seçin:</b>
-"""
-        
-        markup = {
-            'inline_keyboard': [
-                [
-                    {'text': f'📢 → 💰 Reklamden Normale ({ads_balance:.2f}₺)', 'callback_data': 'convert_to_normal'},
-                    {'text': f'💰 → 📢 Normalden Reklama ({normal_balance:.2f}₺)', 'callback_data': 'convert_to_ads'}
-                ],
-                [
-                    {'text': '🔙 Ana Menü', 'callback_data': 'menu'}
-                ]
-            ]
-        }
-        
-        send_message(user_id, message, markup)
-    
-    def start_convert_balance(self, user_id, conversion_type):
-        """Bakiye dönüşümünü başlat"""
-        user = self.db.get_user(user_id)
-        
-        if conversion_type == 'to_normal':
-            # Reklam bakiyesinden normal bakiyeye
-            max_amount = user.get('ads_balance', 0)
-            if max_amount <= 0:
-                send_message(user_id, "❌ Dönüştürecek reklam bakiyeniz yok!")
-                self.show_convert_balance_menu(user_id)
-                return
-            
-            self.set_user_state(user_id, 'convert_balance', {
-                'conversion_type': 'to_normal',
-                'max_amount': max_amount,
-                'step': 1
-            })
-            
-            send_message(user_id, f"""
-<b>📢 → 💰 REKLAM BAKİYESİNİ NORMAL BAKİYEYE DÖNÜŞTÜR</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-<b>💰 Mevcut Reklam Bakiye:</b> {max_amount:.2f}₺
-
-<b>📝 Dönüştürmek istediğiniz tutarı girin:</b>
-• Sadece sayı girin (örn: 50)
-• Maksimum: {max_amount:.2f}₺
-• Minimum: 1₺
-
-💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
-
-<code>/cancel</code> iptal etmek için
-""")
-        
-        else:  # to_ads
-            # Normal bakiyeden reklam bakiyesine
-            max_amount = user.get('normal_balance', 0)
-            if max_amount <= 0:
-                send_message(user_id, "❌ Dönüştürecek normal bakiyeniz yok!")
-                self.show_convert_balance_menu(user_id)
-                return
-            
-            self.set_user_state(user_id, 'convert_balance', {
-                'conversion_type': 'to_ads',
-                'max_amount': max_amount,
-                'step': 1
-            })
-            
-            send_message(user_id, f"""
-<b>💰 → 📢 NORMAL BAKİYEYİ REKLAM BAKİYESİNE DÖNÜŞTÜR</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-<b>💰 Mevcut Normal Bakiye:</b> {max_amount:.2f}₺
-
-<b>📝 Dönüştürmek istediğiniz tutarı girin:</b>
-• Sadece sayı girin (örn: 50)
-• Maksimum: {max_amount:.2f}₺
-• Minimum: 1₺
-
-💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
-
-<code>/cancel</code> iptal etmek için
-""")
-    
     def show_user_stats(self, user_id):
         """Kullanıcı istatistiklerini göster"""
         user = self.db.get_user(user_id)
-        
-        # Toplam kazanç
-        total_earned = user.get('total_earned', 0)
         
         # Bugünkü kazanç
         today_start = get_turkey_time().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -1816,9 +1591,6 @@ class BotSystem:
         monthly_earnings_result = self.db.cursor.fetchone()
         monthly_earnings = monthly_earnings_result[0] or 0
         
-        # Toplam görev
-        total_tasks = user.get('tasks_completed', 0)
-        
         # Bugünkü görev
         self.db.cursor.execute('''
             SELECT COUNT(*) 
@@ -1838,6 +1610,15 @@ class BotSystem:
         total_refs = ref_stats['total_refs'] if ref_stats else 0
         total_ref_earned = ref_stats['total_ref_earned'] if ref_stats and ref_stats['total_ref_earned'] else 0
         
+        # Komisyon istatistikleri
+        self.db.cursor.execute('''
+            SELECT SUM(amount) as total_commission
+            FROM commission_logs 
+            WHERE referrer_id = ? AND status = 'completed'
+        ''', (user_id,))
+        commission_stats = self.db.cursor.fetchone()
+        total_commission = commission_stats['total_commission'] if commission_stats else 0
+        
         message = f"""
 <b>📊 KULLANICI İSTATİSTİKLERİNİZ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1845,42 +1626,39 @@ class BotSystem:
 <b>👤 Kullanıcı:</b> {user.get('name', 'Kullanıcı')}
 <b>🆔 ID:</b> <code>{user_id}</code>
 
-<b>💰 BAKİYE DURUMU</b>
-├ <b>Normal Bakiye:</b> {user.get('normal_balance', 0):.2f}₺
-├ <b>Reklam Bakiye:</b> {user.get('ads_balance', 0):.2f}₺
-└ <b>Toplam Bakiye:</b> {user.get('balance', 0):.2f}₺
-
-<b>📈 KAZANÇ İSTATİSTİKLERİ</b>
-├ <b>Bugünkü Kazanç:</b> {today_earnings:.2f}₺
-├ <b>Haftalık Kazanç:</b> {weekly_earnings:.2f}₺
-├ <b>Aylık Kazanç:</b> {monthly_earnings:.2f}₺
-└ <b>Toplam Kazanç:</b> {total_earned:.2f}₺
+<b>💰 KAZANÇ İSTATİSTİKLERİ</b>
+├ <b>Bugünkü Kazanç:</b> {today_earnings:.3f}$
+├ <b>Haftalık Kazanç:</b> {weekly_earnings:.3f}$
+├ <b>Aylık Kazanç:</b> {monthly_earnings:.3f}$
+└ <b>Toplam Kazanç:</b> {user.get('total_earned', 0):.3f}$
 
 <b>🎯 GÖREV İSTATİSTİKLERİ</b>
 ├ <b>Bugünkü Görev:</b> {today_tasks}
-└ <b>Toplam Görev:</b> {total_tasks}
+└ <b>Toplam Görev:</b> {user.get('tasks_completed', 0)}
 
 <b>👥 REFERANS İSTATİSTİKLERİ</b>
 ├ <b>Toplam Referans:</b> {total_refs}
-└ <b>Referans Kazancı:</b> {total_ref_earned:.2f}₺
+├ <b>Referans Bonusu:</b> {total_ref_earned:.3f}$
+├ <b>Görev Komisyonu:</b> {total_commission:.3f}$
+└ <b>Toplam Referans Kazancı:</b> {total_ref_earned + total_commission:.3f}$
 
 <b>💡 REKLAMVEREN İSTATİSTİKLERİ</b>
 """
         
         if user.get('is_advertiser', 0):
             message += f"""
-├ <b>Reklamveren Durumu:</b> Aktif
-├ <b>Toplam Harcama:</b> {user.get('total_spent_on_ads', 0):.2f}₺
-└ <b>Toplam Yatırım:</b> {user.get('total_deposited', 0):.2f}₺
+├ <b>Reklamveren Bakiye:</b> {user.get('advertiser_balance', 0):.3f}$
+├ <b>Toplam Harcama:</b> {user.get('total_spent_on_ads', 0):.3f}$
+└ <b>Toplam Yatırım:</b> {user.get('total_deposited', 0):.3f}$
 """
         else:
             message += "└ <i>Reklamveren modu kapalı</i>"
         
         message += f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-<b>📢 GERÇEK ZAMANLI BİLDİRİMLER</b>
+<b>📈 GERÇEK ZAMANLI İSTATİSTİKLER</b>
 <b>💬 Sohbet:</b> @{MANDATORY_CHANNEL}
-<b>📢 Referans:</b> @{REFERENCE_GROUP}
+<b>📊 İstatistik:</b> @{STATS_CHANNEL}
 """
         
         markup = {
@@ -1890,7 +1668,6 @@ class BotSystem:
                     {'text': '💰 Bakiye Yükle', 'callback_data': 'deposit'}
                 ],
                 [
-                    {'text': '🔄 Bakiye Dönüştür', 'callback_data': 'convert_balance'},
                     {'text': '🔙 Ana Menü', 'callback_data': 'menu'}
                 ]
             ]
@@ -1915,11 +1692,11 @@ class BotSystem:
 
 📊 <b>Artık şunları yapabilirsiniz:</b>
 • 📢 Görev oluşturabilirsiniz
-• 💰 Reklam bakiyesi yükleyebilirsiniz
+• 💰 Reklamveren bakiyesi yükleyebilirsiniz
 • 📈 Reklamlarınızı takip edebilirsiniz
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>"Reklamveren" butonuna tıklayarak işlemlerinize başlayın!</b>
 """
@@ -1942,7 +1719,7 @@ class BotSystem:
 • 💸 Kazançlarınızı çekebilirsiniz
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>Tekrar reklamveren olmak için "Reklamveren Ol" butonuna tıklayın!</b>
 """
@@ -1967,11 +1744,11 @@ class BotSystem:
 <b>👑 REKLAMVEREN MENÜSÜ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>💰 Reklam Bakiye:</b> {user.get('ads_balance', 0):.2f}₺
-<b>📈 Toplam Harcama:</b> {user.get('total_spent_on_ads', 0):.2f}₺
+<b>💰 Reklamveren Bakiye:</b> {user.get('advertiser_balance', 0):.3f}$
+<b>📈 Toplam Harcama:</b> {user.get('total_spent_on_ads', 0):.3f}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 <b>📋 İŞLEMLER</b>
@@ -2004,19 +1781,18 @@ class BotSystem:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>📊 Bakiye Bilgileri:</b>
-• Reklam Bakiye: {user.get('ads_balance', 0):.2f}₺
-• Normal Bakiye: {user.get('normal_balance', 0):.2f}₺
-• Toplam Bakiye: {user.get('balance', 0):.2f}₺
-• Toplam Yatırım: {user.get('total_deposited', 0):.2f}₺
-• Toplam Harcama: {user.get('total_spent_on_ads', 0):.2f}₺
+• Reklamveren Bakiye: {user.get('advertiser_balance', 0):.3f}$
+• Normal Bakiye: {user.get('balance', 0):.3f}$
+• Toplam Yatırım: {user.get('total_deposited', 0):.3f}$
+• Toplam Harcama: {user.get('total_spent_on_ads', 0):.3f}$
 
 <b>💡 Not:</b>
-• Reklam bakiyesi sadece reklam vermek için kullanılır
+• Reklamveren bakiyesi sadece reklam vermek için kullanılır
 • Normal bakiye kazanılan paradır ve çekilebilir
-• Reklam bakiyesi çekilemez, sadece reklamlarda kullanılır
+• Reklamveren bakiyesi çekilemez, sadece reklamlarda kullanılır
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 """
         
         markup = {
@@ -2036,20 +1812,20 @@ class BotSystem:
     def start_advertiser_task_creation(self, user_id):
         user = self.db.get_user(user_id)
         
-        if user.get('ads_balance', 0) < GROUP_TASK_PRICE:
+        if user.get('advertiser_balance', 0) < BOT_TASK_PRICE:
             message = f"""
-<b>❌ YETERSİZ REKLAM BAKİYESİ</b>
+<b>❌ YETERSİZ REKLAMVEREN BAKİYESİ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-⚠️ <b>Reklam bakiyeniz yetersiz!</b>
+⚠️ <b>Reklamveren bakiyeniz yetersiz!</b>
 
 <b>📊 Mevcut Durum:</b>
-• Reklam Bakiye: {user.get('ads_balance', 0):.2f}₺
-• Minimum Gerekli: {GROUP_TASK_PRICE:.2f}₺
+• Reklamveren Bakiye: {user.get('advertiser_balance', 0):.3f}$
+• Minimum Gerekli: {BOT_TASK_PRICE:.3f}$
 
 <b>💡 Çözüm:</b>
 1. "💰 Bakiye Yükle" butonuna tıklayın
-2. Reklam bakiyesi yükleyin
+2. Reklamveren bakiyesi yükleyin
 3. Tekrar görev oluşturmayı deneyin
 """
             
@@ -2065,30 +1841,40 @@ class BotSystem:
             send_message(user_id, message, markup)
             return
         
-        message = """
+        message = f"""
 <b>📢 REKLAMVEREN GÖREV OLUŞTURMA</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>👇 Görev Türünü Seçin:</b>
 
+<b>📢 KANAL GÖREVİ</b>
+• Ödül: {CHANNEL_TASK_PRICE:.3f}$ her katılım
+• Gereksinim: Bot kanalda admin olmalı
+• Katılımcılar kanala katılır
+
 <b>👥 GRUP GÖREVİ</b>
-• Ödül: 0.5₺ her katılım
+• Ödül: {GROUP_TASK_PRICE:.3f}$ her katılım
 • Gereksinim: Bot grupta admin olmalı
 • Katılımcılar gruba katılır
 
-<b>📢 KANAL GÖREVİ</b>
-• Ödül: 1.25₺ her katılım
-• Gereksinim: Bot kanalda admin olmalı
-• Katılımcılar kanala katılır
+<b>🤖 BOT GÖREVİ</b>
+• Ödül: {BOT_TASK_PRICE:.3f}$ her katılım
+• Gereksinim: Bot ile etkileşim
+• Katılımcılar botu kullanır
+
+<b>💡 Ödeme Sistemi: 3/1</b>
+• 3 görevde 1 ödeme
+• Sistem otomatik hesaplar
 """
         
         markup = {
             'inline_keyboard': [
                 [
-                    {'text': '👥 Grup Görevi', 'callback_data': 'task_type_group'},
-                    {'text': '📢 Kanal Görevi', 'callback_data': 'task_type_channel'}
+                    {'text': '📢 Kanal Görevi', 'callback_data': 'task_type_channel'},
+                    {'text': '👥 Grup Görevi', 'callback_data': 'task_type_group'}
                 ],
                 [
+                    {'text': '🤖 Bot Görevi', 'callback_data': 'task_type_bot'},
                     {'text': '🔙 Geri', 'callback_data': 'advertiser_menu'}
                 ]
             ]
@@ -2099,16 +1885,19 @@ class BotSystem:
     def handle_task_type_selection(self, user_id, task_type):
         user = self.db.get_user(user_id)
         
-        if task_type == 'group':
-            reward = GROUP_TASK_PRICE
-            task_type_text = "Grup"
-        else:  # channel
+        if task_type == 'channel':
             reward = CHANNEL_TASK_PRICE
             task_type_text = "Kanal"
+        elif task_type == 'group':
+            reward = GROUP_TASK_PRICE
+            task_type_text = "Grup"
+        else:  # bot
+            reward = BOT_TASK_PRICE
+            task_type_text = "Bot"
         
         # Kullanıcının bakiyesini kontrol et
-        if user.get('ads_balance', 0) < reward:
-            send_message(user_id, f"❌ Yetersiz bakiye! Minimum {reward:.2f}₺ gereklidir.")
+        if user.get('advertiser_balance', 0) < reward:
+            send_message(user_id, f"❌ Yetersiz bakiye! Minimum {reward:.3f}$ gereklidir.")
             self.show_advertiser_menu(user_id)
             return
         
@@ -2124,12 +1913,8 @@ class BotSystem:
 
 <b>ℹ️ Bilgiler:</b>
 • Görev Türü: {task_type_text}
-• Ödül: {reward:.2f}₺ her katılım
-• Botun admin olduğu bir {task_type_text.lower()} gerekli
-
-<b>📝 {task_type_text} ID veya linkini gönderin:</b>
-• Örnek: @grup_adi veya https://t.me/grup_adi
-• Botun {task_type_text.lower()}da admin olduğundan emin olun
+• Ödül: {reward:.3f}$ her katılım
+• Ödeme Sistemi: 3/1 (3 görevde 1 ödeme)
 
 <code>/cancel</code> iptal etmek için
 """)
@@ -2141,8 +1926,9 @@ class BotSystem:
 <b>💰 REKLAMVEREN BAKİYE YÜKLEME</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>₿ TRX Fiyatı:</b> {self.trx_price:.2f}₺
+<b>₿ TRX Fiyatı:</b> {self.trx_price:.3f}$
 <b>⚠️ Not:</b> Reklamveren bakiyesi sadece reklam vermek için kullanılır
+<b>💰 Maksimum Depozit:</b> {MAX_DEPOSIT_USD}$
 
 <b>👇 Yüklemek istediğiniz tutarı seçin:</b>
 """
@@ -2150,12 +1936,12 @@ class BotSystem:
         markup = {
             'inline_keyboard': [
                 [
-                    {'text': f'50₺ Reklamveren', 'callback_data': 'deposit_amount_50_advertiser'},
-                    {'text': f'100₺ Reklamveren', 'callback_data': 'deposit_amount_100_advertiser'}
+                    {'text': f'2.5$', 'callback_data': 'deposit_amount_2.5_advertiser'},
+                    {'text': f'5$', 'callback_data': 'deposit_amount_5_advertiser'}
                 ],
                 [
-                    {'text': f'200₺ Reklamveren', 'callback_data': 'deposit_amount_200_advertiser'},
-                    {'text': f'500₺ Reklamveren', 'callback_data': 'deposit_amount_500_advertiser'}
+                    {'text': f'7.5$', 'callback_data': 'deposit_amount_7.5_advertiser'},
+                    {'text': f'10$', 'callback_data': 'deposit_amount_10_advertiser'}
                 ],
                 [
                     {'text': '🔙 Geri', 'callback_data': 'advertiser_menu'}
@@ -2185,8 +1971,8 @@ class BotSystem:
 💬 <b>Görev yapmak için:</b>
 👉 @{MANDATORY_CHANNEL}
 
-📢 <b>Referans Grubu:</b>
-👉 @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b>
+👉 @{STATS_CHANNEL}
 
 💡 <b>Katıldıktan sonra "Katıldım" butonuna basın</b>
 """, markup)
@@ -2209,7 +1995,7 @@ class BotSystem:
 📭 <b>Şu anda aktif görev bulunmuyor</b>
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>Yeni görevler eklendiğinde bildirim alacaksınız!</b>
 """
@@ -2224,13 +2010,19 @@ class BotSystem:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
             
             for task in tasks:
-                task_type = "👥 Grup" if task['task_type'] == 'group' else "📢 Kanal"
+                if task['task_type'] == 'channel':
+                    task_type = "📢 Kanal"
+                elif task['task_type'] == 'group':
+                    task_type = "👥 Grup"
+                else:
+                    task_type = "🤖 Bot"
+                
                 reward = task['reward_amount']
                 
                 # Kullanıcı bu göreve katılmış mı kontrol et
@@ -2242,8 +2034,8 @@ class BotSystem:
                 
                 status = "✅ Katıldınız" if participation else "🟢 Katıl"
                 
-                message += f"""{task_type} <b>{task['target_name'][:20]}</b>
-├ <b>Ödül:</b> {reward:.2f}₺
+                message += f"""{task_type} <b>{task.get('target_name', 'Bot Görevi')[:20]}</b>
+├ <b>Ödül:</b> {reward:.3f}$
 ├ <b>Katılımcı:</b> {task['current_participants']}/{task['max_participants']}
 └ <b>Durum:</b> {status}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2262,7 +2054,7 @@ class BotSystem:
                     markup = {
                         'inline_keyboard': [
                             [
-                                {'text': f'🎯 Katıl ({first_task["reward_amount"]:.2f}₺)', 
+                                {'text': f'🎯 Katıl ({first_task["reward_amount"]:.3f}$)', 
                                  'callback_data': f'join_task_{first_task["task_id"]}'}
                             ],
                             [
@@ -2302,71 +2094,85 @@ class BotSystem:
             send_message(user_id, "❌ Zaten bu göreve katıldınız!")
             return
         
-        # Kullanıcı grupta/kanalda mı kontrol et
         user = self.db.get_user(user_id)
         
-        if task['task_type'] == 'group':
-            if not get_chat_member(task['target_id'], user_id):
-                # Gruba katılma linki göster
-                markup = {
-                    'inline_keyboard': [
-                        [
-                            {'text': '👥 Gruba Katıl', 'url': f'https://t.me/{task["target_id"].replace("@", "")}'},
-                            {'text': '✅ Katıldım', 'callback_data': f'join_task_{task_id}'}
-                        ]
-                    ]
-                }
+        # Bot görevi için farklı işlem
+        if task['task_type'] == 'bot':
+            # Bot görevine direkt katıl
+            success, message = self.db.join_task(task_id, user_id, user.get('name', 'Kullanıcı'))
+            
+            if success:
+                # Reklamverene bildirim gönder
+                send_message(task['advertiser_id'], f"""
+<b>👤 YENİ BOT GÖREV KATILIMI</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎉 <b>Yeni katılımcı!</b>
+
+📊 <b>Detaylar:</b>
+• Görev: Bot Görevi
+• Katılımcı: {user.get('name', 'Kullanıcı')}
+• Ödül: {task['reward_amount']:.3f}$
+• Toplam Katılımcı: {task['current_participants'] + 1}
+
+💡 <b>Katılımı doğrulamak için görevlerim sayfasına bakın!</b>
+""")
                 
+                # Kullanıcıya bildirim
                 send_message(user_id, f"""
-<b>👥 GRUPA KATILMA GÖREVİ</b>
+<b>✅ BOT GÖREVİNE KATILDINIZ</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎉 <b>Bot görevine başarıyla katıldınız!</b>
+
+📊 <b>Detaylar:</b>
+• Görev: Bot Görevi
+• Ödül: {task['reward_amount']:.3f}$
+• Durum: Doğrulama bekliyor
+
+💡 <b>Reklamveren katılımınızı doğruladığında ödülünüz bakiyenize eklenecek!</b>
+
+💰 <b>Komisyon:</b> Referansınız varsa %{REF_TASK_COMMISSION*100} komisyon kazanacak!
+""")
+            
+            else:
+                send_message(user_id, f"❌ {message}")
+            
+            return
+        
+        # Kanal/Grup görevi için
+        if not get_chat_member(task['target_id'], user_id):
+            # Gruba/Kanala katılma linki göster
+            task_type_text = "gruba" if task['task_type'] == 'group' else "kanala"
+            markup = {
+                'inline_keyboard': [
+                    [
+                        {'text': f'👥 Katıl', 'url': f'https://t.me/{task["target_id"].replace("@", "")}'},
+                        {'text': '✅ Katıldım', 'callback_data': f'join_task_{task_id}'}
+                    ]
+                ]
+            }
+            
+            send_message(user_id, f"""
+<b>👥 {task['task_type'].upper()} KATILMA GÖREVİ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📋 <b>Görev:</b> {task['target_name']}
-💰 <b>Ödül:</b> {task['reward_amount']:.2f}₺
+💰 <b>Ödül:</b> {task['reward_amount']:.3f}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <b>📝 Adımlar:</b>
-1. Yukarıdaki butona tıklayarak gruba katılın
+1. Yukarıdaki butona tıklayarak {task_type_text} katılın
 2. Katıldıktan sonra "Katıldım" butonuna basın
 3. Sistem otomatik olarak katılımınızı doğrulayacak
 4. Ödülünüz bakiyenize eklenecek
 
-⚠️ <b>Önemli:</b> Grubu terk ederseniz ödülünüz geri alınır!
+⚠️ <b>Önemli:</b> Grubu/Kanalı terk ederseniz ödülünüz geri alınır!
+💰 <b>Komisyon:</b> Referansınız varsa %{REF_TASK_COMMISSION*100} komisyon kazanacak!
 """, markup)
-                return
-        else:  # channel
-            if not get_chat_member(task['target_id'], user_id):
-                # Kanala katılma linki göster
-                markup = {
-                    'inline_keyboard': [
-                        [
-                            {'text': '📢 Kanala Katıl', 'url': f'https://t.me/{task["target_id"].replace("@", "")}'},
-                            {'text': '✅ Katıldım', 'callback_data': f'join_task_{task_id}'}
-                        ]
-                    ]
-                }
-                
-                send_message(user_id, f"""
-<b>📢 KANALA KATILMA GÖREVİ</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📋 <b>Görev:</b> {task['target_name']}
-💰 <b>Ödül:</b> {task['reward_amount']:.2f}₺
-
-💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
-
-<b>📝 Adımlar:</b>
-1. Yukarıdaki butona tıklayarak kanala katılın
-2. Katıldıktan sonra "Katıldım" butonuna basın
-3. Sistem otomatik olarak katılımınızı doğrulayacak
-4. Ödülünüz bakiyenize eklenecek
-
-⚠️ <b>Önemli:</b> Kanalı terk ederseniz ödülünüz geri alınır!
-""", markup)
-                return
+            return
         
         # Kullanıcı zaten grupta/kanalda, doğrudan katılım kaydı oluştur
         success, message = self.db.join_task(task_id, user_id, user.get('name', 'Kullanıcı'))
@@ -2382,7 +2188,7 @@ class BotSystem:
 📊 <b>Detaylar:</b>
 • Görev: {task['target_name']}
 • Katılımcı: {user.get('name', 'Kullanıcı')}
-• Ödül: {task['reward_amount']:.2f}₺
+• Ödül: {task['reward_amount']:.3f}$
 • Toplam Katılımcı: {task['current_participants'] + 1}
 
 💡 <b>Katılımı doğrulamak için görevlerim sayfasına bakın!</b>
@@ -2397,12 +2203,13 @@ class BotSystem:
 
 📊 <b>Detaylar:</b>
 • Görev: {task['target_name']}
-• Ödül: {task['reward_amount']:.2f}₺
+• Ödül: {task['reward_amount']:.3f}$
 • Durum: Doğrulama bekliyor
 
 💡 <b>Reklamveren katılımınızı doğruladığında ödülünüz bakiyenize eklenecek!</b>
 
 ⚠️ <b>Önemli:</b> Grubu/Kanalı terk etmeyin, yoksa ödülünüz geri alınır!
+💰 <b>Komisyon:</b> Referansınız varsa %{REF_TASK_COMMISSION*100} komisyon kazanacak!
 """)
         else:
             send_message(user_id, f"❌ {message}")
@@ -2431,15 +2238,18 @@ class BotSystem:
         success, result_message = self.db.verify_task_participation(participation_id)
         
         if success:
-            # Referans grubuna bildirim gönder
-            self.reference_notifier.notify_task_completed(
+            # Komisyon bilgilerini al
+            commission_paid = participation.get('commission_paid', 0)
+            
+            # İstatistik bildirimi gönder
+            self.stats_notifier.notify_task_completed(
                 participation['task_id'],
                 participation['user_id'],
                 participation['reward_amount']
             )
             
             # Reklamverene bildirim
-            send_message(user_id, f"""
+            message = f"""
 <b>✅ GÖREV DOĞRULANDI</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2447,11 +2257,18 @@ class BotSystem:
 
 📊 <b>Detaylar:</b>
 • Katılımcı: {participation['user_name']}
-• Ödül: {participation['reward_amount']:.2f}₺ ödendi
-• Yeni Reklam Bakiye: {self.db.get_user(user_id)['ads_balance']:.2f}₺
+• Ödül: {participation['reward_amount']:.3f}$ ödendi
+"""
+            
+            if commission_paid > 0:
+                message += f"• Komisyon: {commission_paid:.3f}$ (referans sahibine)\n"
+            
+            message += f"""• Yeni Reklamveren Bakiye: {self.db.get_user(user_id)['advertiser_balance']:.3f}$
 
 💡 <b>Katılımcı ödülünü aldı!</b>
-""")
+"""
+            
+            send_message(user_id, message)
         else:
             send_message(user_id, f"❌ {result_message}")
     
@@ -2473,7 +2290,7 @@ class BotSystem:
 📭 <b>Henüz göreviniz bulunmuyor</b>
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>İlk görevinizi oluşturun!</b>
 """
@@ -2491,20 +2308,26 @@ class BotSystem:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
             
             for task in tasks:
-                task_type = "👥 Grup" if task['task_type'] == 'group' else "📢 Kanal"
+                if task['task_type'] == 'channel':
+                    task_type = "📢 Kanal"
+                elif task['task_type'] == 'group':
+                    task_type = "👥 Grup"
+                else:
+                    task_type = "🤖 Bot"
+                
                 status = "🟢" if task['status'] == 'active' else "🟡" if task['status'] == 'pending' else "🔴"
                 
-                message += f"""{status} <b>{task['target_name'][:20]}</b>
+                message += f"""{status} <b>{task.get('target_name', 'Bot Görevi')[:20]}</b>
 ├ <b>Tür:</b> {task_type}
-├ <b>Ödül:</b> {task['reward_amount']:.2f}₺
+├ <b>Ödül:</b> {task['reward_amount']:.3f}$
 ├ <b>Katılım:</b> {task['current_participants']}/{task['max_participants']}
-└ <b>Harcama:</b> {task['total_spent']:.2f}₺
+└ <b>Harcama:</b> {task['total_spent']:.3f}$
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
             
@@ -2520,7 +2343,7 @@ class BotSystem:
                 participations = self.db.cursor.fetchall()
                 
                 if participations:
-                    message += f"\n<b>📋 {first_task['target_name'][:15]} Katılımları:</b>\n"
+                    message += f"\n<b>📋 {first_task.get('target_name', 'Bot Görevi')[:15]} Katılımları:</b>\n"
                     for part in participations:
                         status_icon = "✅" if part['status'] == 'verified' else "⏳" if part['status'] == 'pending' else "❌"
                         message += f"{status_icon} {part['user_name'][:15]} - {part['status']}\n"
@@ -2552,23 +2375,23 @@ class BotSystem:
     def start_advertiser_withdraw(self, user_id):
         """Reklamveren para çekme işlemi"""
         user = self.db.get_user(user_id)
-        ads_balance = user.get('ads_balance', 0)
+        advertiser_balance = user.get('advertiser_balance', 0)
         
-        if ads_balance < MIN_WITHDRAW:
+        if advertiser_balance < MIN_WITHDRAW:
             message = f"""
-<b>❌ YETERSİZ REKLAM BAKİYESİ</b>
+<b>❌ YETERSİZ REKLAMVEREN BAKİYESİ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-⚠️ <b>Reklam bakiyeniz yetersiz!</b>
+⚠️ <b>Reklamveren bakiyeniz yetersiz!</b>
 
 <b>📊 Mevcut Durum:</b>
-• Reklam Bakiye: {ads_balance:.2f}₺
-• Minimum Çekim: {MIN_WITHDRAW}₺
+• Reklamveren Bakiye: {advertiser_balance:.3f}$
+• Minimum Çekim: {MIN_WITHDRAW}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
-💡 <b>Not:</b> Reklam bakiyesi genellikle çekilemez, 
+💡 <b>Not:</b> Reklamveren bakiyesi genellikle çekilemez, 
 sadece reklam vermek için kullanılır. 
 Özel durumlar için admin ile iletişime geçin.
 """
@@ -2586,19 +2409,19 @@ sadece reklam vermek için kullanılır.
 <b>💸 REKLAMVEREN PARA ÇEKME</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>💰 Mevcut Reklam Bakiye:</b> {ads_balance:.2f}₺
+<b>💰 Mevcut Reklamveren Bakiye:</b> {advertiser_balance:.3f}$
 
 <b>⚠️ ÖNEMLİ UYARI:</b>
-• Reklam bakiyesi genellikle çekilemez
+• Reklamveren bakiyesi genellikle çekilemez
 • Sadece reklam vermek için kullanılır
 • Özel durumlar için admin onayı gereklidir
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <b>📞 İletişim:</b>
 Para çekme talebi için admin ile iletişime geçin:
-👉 @GorevYapsamBot
+👉 @TaskizBot
 """
         
         markup = {
@@ -2628,7 +2451,34 @@ Para çekme talebi için admin ile iletişime geçin:
         # GÖREV OLUŞTURMA
         if state == 'create_task':
             if step == 1:
-                # Grup/Kanal linkini al
+                # Bot görevi için farklı işlem
+                if data['task_type'] == 'bot':
+                    data['step'] = 2
+                    data['target_id'] = 'bot'
+                    data['target_name'] = 'Bot Görevi'
+                    self.set_user_state(user_id, state, data)
+                    
+                    send_message(user_id, f"""
+<b>🤖 BOT GÖREVİ AÇIKLAMASI</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+<b>✅ Bot görevi seçildi!</b>
+
+<b>📋 Görev Bilgileri:</b>
+• Tür: Bot Görevi
+• Ödül: {data['reward']:.3f}$ her katılım
+• Ödeme: 3/1 sistemi
+
+<b>📝 Görev açıklaması girin:</b>
+• Katılımcıların bot ile ne yapması gerektiğini açıklayın
+• Örnek: "Botu kullanarak bir işlem yapın"
+• Maksimum 200 karakter
+
+<code>/cancel</code> iptal etmek için
+""")
+                    return
+                    
+                # Diğer görev türleri için normal işlem
                 target_input = message['text'].strip()
                 
                 # Link veya @username formatını işle
@@ -2639,7 +2489,7 @@ Para çekme talebi için admin ile iletişime geçin:
                 else:
                     target_id = '@' + target_input
                 
-                # Bot admin mi kontrol et
+                # Bot admin mi kontrol et (bot görevi hariç)
                 if not check_bot_admin(target_id):
                     send_message(user_id, f"❌ Bot {target_id} grubunda/kanalında admin değil!")
                     self.clear_user_state(user_id)
@@ -2680,12 +2530,12 @@ Para çekme talebi için admin ile iletişime geçin:
 
 <b>📋 Görev Bilgileri:</b>
 • Tür: {'Grup' if task_type == 'group' else 'Kanal'}
-• Ödül: {data['reward']:.2f}₺ her katılım
+• Ödül: {data['reward']:.3f}$ her katılım
+• Ödeme: 3/1 sistemi
 • Hedef: {target_name}
 
 <b>📝 Görev açıklaması girin:</b>
 • Katılımcıların ne yapması gerektiğini açıklayın
-• Örnek: "Grubumuza katılın ve 24 saat kalın"
 • Maksimum 200 karakter
 
 <code>/cancel</code> iptal etmek için
@@ -2703,7 +2553,33 @@ Para çekme talebi için admin ile iletişime geçin:
                 data['step'] = 3
                 self.set_user_state(user_id, state, data)
                 
-                send_message(user_id, f"""
+                # Alt görev türünü sor (bot görevi için)
+                if data['task_type'] == 'bot':
+                    markup = {
+                        'inline_keyboard': [
+                            [
+                                {'text': '📍 Konum Gönder', 'callback_data': 'bot_subtype_location'},
+                                {'text': '📞 İletişim Paylaş', 'callback_data': 'bot_subtype_contact'}
+                            ],
+                            [
+                                {'text': '💬 Mesaj Gönder', 'callback_data': 'bot_subtype_message'},
+                                {'text': '🎯 Diğer', 'callback_data': 'bot_subtype_other'}
+                            ]
+                        ]
+                    }
+                    
+                    send_message(user_id, f"""
+<b>🤖 BOT GÖREVİ ALT TÜRÜ</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+<b>✅ Açıklama kaydedildi!</b>
+
+<b>📋 Bot Görevi Alt Türünü Seçin:</b>
+
+👇 <b>Aşağıdaki seçeneklerden birini seçin:</b>
+""", markup)
+                else:
+                    send_message(user_id, f"""
 <b>👥 KATILIMCI SAYISI</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2712,18 +2588,49 @@ Para çekme talebi için admin ile iletişime geçin:
 <b>📋 Görev Özeti:</b>
 • Tür: {'Grup' if data['task_type'] == 'group' else 'Kanal'}
 • Hedef: {data['target_name']}
-• Ödül: {data['reward']:.2f}₺ her katılım
+• Ödül: {data['reward']:.3f}$ her katılım
+• Ödeme: 3/1 sistemi
 • Açıklama: {description[:50]}...
 
 <b>📊 Kaç katılımcı kabul edeceksiniz?</b>
 • Sadece sayı girin (örn: 10)
-• Her katılımcı için {data['reward']:.2f}₺ ödeyeceksiniz
-• Toplam maliyet: (katılımcı sayısı × {data['reward']:.2f}₺)
+• Her katılımcı için {data['reward']:.3f}$ ödeyeceksiniz
+• Toplam maliyet: (katılımcı sayısı × {data['reward']:.3f}$)
 
 <code>/cancel</code> iptal etmek için
 """)
             
             elif step == 3:
+                # Bot görevi alt türü
+                if 'callback_query' in message:
+                    callback_data = message['callback_query']['data']
+                    if callback_data.startswith('bot_subtype_'):
+                        data['task_subtype'] = callback_data.replace('bot_subtype_', '')
+                        data['step'] = 4
+                        self.set_user_state(user_id, state, data)
+                        
+                        send_message(user_id, f"""
+<b>👥 KATILIMCI SAYISI</b>
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+<b>✅ Alt tür seçildi!</b>
+
+<b>📋 Görev Özeti:</b>
+• Tür: Bot Görevi
+• Alt Tür: {data['task_subtype']}
+• Ödül: {data['reward']:.3f}$ her katılım
+• Ödeme: 3/1 sistemi
+• Açıklama: {data['description'][:50]}...
+
+<b>📊 Kaç katılımcı kabul edeceksiniz?</b>
+• Sadece sayı girin (örn: 10)
+• Her katılımcı için {data['reward']:.3f}$ ödeyeceksiniz
+• Toplam maliyet: (katılımcı sayısı × {data['reward']:.3f}$)
+
+<code>/cancel</code> iptal etmek için
+""")
+                        return
+                
                 # Katılımcı sayısını al
                 try:
                     max_participants = int(message['text'].strip())
@@ -2740,8 +2647,8 @@ Para çekme talebi için admin ile iletişime geçin:
                     total_cost = max_participants * data['reward']
                     user = self.db.get_user(user_id)
                     
-                    if user.get('ads_balance', 0) < total_cost:
-                        send_message(user_id, f"❌ Yetersiz bakiye! Toplam maliyet: {total_cost:.2f}₺, Mevcut: {user.get('ads_balance', 0):.2f}₺")
+                    if user.get('advertiser_balance', 0) < total_cost:
+                        send_message(user_id, f"❌ Yetersiz bakiye! Toplam maliyet: {total_cost:.3f}$, Mevcut: {user.get('advertiser_balance', 0):.3f}$")
                         self.clear_user_state(user_id)
                         self.show_advertiser_menu(user_id)
                         return
@@ -2750,23 +2657,24 @@ Para çekme talebi için admin ile iletişime geçin:
                     task_id = self.db.create_task(
                         user_id,
                         data['task_type'],
-                        data['target_id'],
-                        data['target_name'],
+                        data.get('task_subtype', ''),
+                        data.get('target_id', 'bot'),
+                        data.get('target_name', 'Bot Görevi'),
                         data['description'],
                         data['reward'],
                         max_participants
                     )
                     
-                    # Bakiyeyi bloke et (henüz ödeme yapılmadı, sadece rezerve edildi)
+                    # Bakiyeyi bloke et
                     self.db.cursor.execute('''
                         UPDATE users 
-                        SET ads_balance = ads_balance - ?
+                        SET advertiser_balance = advertiser_balance - ?
                         WHERE user_id = ?
                     ''', (total_cost, user_id))
                     self.db.conn.commit()
                     
-                    # Referans grubuna bildirim gönder
-                    self.reference_notifier.notify_new_task(task_id, user_id)
+                    # İstatistik bildirimi gönder
+                    self.stats_notifier.notify_new_task(task_id, user_id)
                     
                     # Başarı mesajı
                     send_message(user_id, f"""
@@ -2777,21 +2685,19 @@ Para çekme talebi için admin ile iletişime geçin:
 
 📊 <b>Görev Detayları:</b>
 • Görev ID: {task_id}
-• Tür: {'Grup' if data['task_type'] == 'group' else 'Kanal'}
-• Hedef: {data['target_name']}
-• Ödül: {data['reward']:.2f}₺ her katılım
+• Tür: {'Grup' if data['task_type'] == 'group' else 'Kanal' if data['task_type'] == 'channel' else 'Bot'}
+• Ödül: {data['reward']:.3f}$ her katılım
+• Ödeme Sistemi: 3/1
 • Maksimum Katılımcı: {max_participants}
-• Toplam Maliyet: {total_cost:.2f}₺ (bloke edildi)
+• Toplam Maliyet: {total_cost:.3f}$ (bloke edildi)
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
-💡 <b>Katılımcılar görevinize katıldıkça:</b>
-1. Katılımları doğrulayın
-2. Ödemeler otomatik olarak yapılır
-3. Bloke edilen bakiye harcanır
-
-📈 <b>Görevlerinizi takip etmek için "Görevlerim" butonuna tıklayın!</b>
+💡 <b>3/1 Ödeme Sistemi:</b>
+1. Kullanıcı 3 görev yapar
+2. 4. görevde ödeme alır
+3. Sistem otomatik hesaplar
 """)
                     
                     self.clear_user_state(user_id)
@@ -2799,77 +2705,6 @@ Para çekme talebi için admin ile iletişime geçin:
                     
                 except ValueError:
                     send_message(user_id, "❌ Geçersiz sayı! Lütfen sadece sayı girin.")
-        
-        # BAKİYE DÖNÜŞTÜRME
-        elif state == 'convert_balance':
-            if step == 1:
-                try:
-                    amount = float(message['text'].strip())
-                    max_amount = data['max_amount']
-                    conversion_type = data['conversion_type']
-                    
-                    if amount < 1:
-                        send_message(user_id, "❌ Minimum 1₺ dönüştürebilirsiniz!")
-                        return
-                    
-                    if amount > max_amount:
-                        send_message(user_id, f"❌ Maksimum {max_amount:.2f}₺ dönüştürebilirsiniz!")
-                        return
-                    
-                    if conversion_type == 'to_normal':
-                        # Reklam bakiyesinden normal bakiyeye
-                        success, message_text = self.db.convert_balance(user_id, amount, "advertiser", "normal")
-                        
-                        if success:
-                            send_message(user_id, f"""
-<b>✅ BAKİYE DÖNÜŞTÜRÜLDÜ!</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🎉 <b>{amount:.2f}₺ reklam bakiyesi normal bakiyeye dönüştürüldü!</b>
-
-📊 <b>Yeni Bakiyeler:</b>
-• Normal Bakiye: {self.db.get_user(user_id)['normal_balance']:.2f}₺
-• Reklam Bakiye: {self.db.get_user(user_id)['ads_balance']:.2f}₺
-• Toplam Bakiye: {self.db.get_user(user_id)['balance']:.2f}₺
-
-💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
-
-💡 <b>Normal bakiyenizi görev yapmak veya para çekmek için kullanabilirsiniz!</b>
-""")
-                        else:
-                            send_message(user_id, f"❌ {message_text}")
-                    
-                    else:  # to_ads
-                        # Normal bakiyeden reklam bakiyesine
-                        success, message_text = self.db.convert_balance(user_id, amount, "normal", "advertiser")
-                        
-                        if success:
-                            send_message(user_id, f"""
-<b>✅ BAKİYE DÖNÜŞTÜRÜLDÜ!</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🎉 <b>{amount:.2f}₺ normal bakiye reklam bakiyesine dönüştürüldü!</b>
-
-📊 <b>Yeni Bakiyeler:</b>
-• Normal Bakiye: {self.db.get_user(user_id)['normal_balance']:.2f}₺
-• Reklam Bakiye: {self.db.get_user(user_id)['ads_balance']:.2f}₺
-• Toplam Bakiye: {self.db.get_user(user_id)['balance']:.2f}₺
-
-💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
-
-💡 <b>Reklam bakiyenizi görev oluşturmak için kullanabilirsiniz!</b>
-""")
-                        else:
-                            send_message(user_id, f"❌ {message_text}")
-                    
-                    self.clear_user_state(user_id)
-                    time.sleep(2)
-                    self.show_convert_balance_menu(user_id)
-                    
-                except ValueError:
-                    send_message(user_id, "❌ Geçersiz tutar! Lütfen sadece sayı girin.")
         
         # TXID BEKLEME (Hem kullanıcı hem reklamveren)
         elif state == 'waiting_txid':
@@ -2894,40 +2729,34 @@ Para çekme talebi için admin ile iletişime geçin:
                 
                 if deposit_type == 'advertiser':
                     # Reklamveren bakiyesine ekle
-                    self.db.add_balance(user_id, amount, "advertiser", 0, "deposit")
+                    self.db.add_advertiser_balance(user_id, amount)
                     
-                    # Referans grubuna bildirim gönder
-                    self.reference_notifier.notify_deposit(user_id, amount, 'advertiser')
+                    # İstatistik bildirimi gönder
+                    self.stats_notifier.notify_deposit(user_id, amount, 'advertiser')
                     
                     # Başarı mesajı
                     send_message(user_id, f"""
 <b>✅ REKLAMVEREN BAKİYESİ YÜKLENDİ!</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-💰 <b>Toplam: {amount:.2f}₺</b>
-• Yatırım: {amount:.2f}₺
-• Yeni Reklam Bakiye: {self.db.get_user(user_id)['ads_balance']:.2f}₺
+💰 <b>Toplam: {amount:.3f}$</b>
+• Yatırım: {amount:.3f}$
+• Yeni Reklamveren Bakiye: {self.db.get_user(user_id)['advertiser_balance']:.3f}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 🎉 <b>Hemen reklam vermeye başlayın!</b>
 """)
                 else:
                     # Normal kullanıcı bakiyesine ekle
-                    bonus = amount * DEPOSIT_BONUS_PERCENT / 100
-                    total = amount + bonus
-                    
                     user = self.db.get_user(user_id)
-                    new_balance = user.get('balance', 0) + total
-                    new_normal_balance = user.get('normal_balance', 0) + total
-                    
-                    self.db.cursor.execute('''
-                        UPDATE users 
-                        SET balance = ?, normal_balance = ?, total_deposited = total_deposited + ?, 
-                        deposit_count = deposit_count + 1, total_bonus = total_bonus + ?
-                        WHERE user_id = ?
-                    ''', (new_balance, new_normal_balance, amount, bonus, user_id))
+                    new_balance = user.get('balance', 0) + amount
+                    self.db.update_user(user_id, {
+                        'balance': new_balance,
+                        'total_deposited': user.get('total_deposited', 0) + amount,
+                        'deposit_count': user.get('deposit_count', 0) + 1
+                    })
                     
                     # Referans komisyonu
                     ref_commission = 0
@@ -2935,31 +2764,29 @@ Para çekme talebi için admin ile iletişime geçin:
                         ref_commission = amount * 0.10  # %10 komisyon
                         referrer = self.db.get_user(user['referred_by'])
                         if referrer:
-                            self.db.add_balance(user['referred_by'], ref_commission, "normal", 0, "referral_deposit")
+                            self.db.add_balance(user['referred_by'], ref_commission, 0, "referral_deposit")
                             
                             # Referans komisyonu kaydı
-                            referral_link = f"https://t.me/GorevYapsamBot?start=ref_{user['referred_by']}"
+                            referral_link = f"https://t.me/TaskizBot?start=ref_{user['referred_by']}"
                             log_id = self.db.record_referral(user['referred_by'], user_id, referral_link, ref_commission)
                             self.db.complete_referral(log_id, "referral_deposit")
                     
-                    # Referans grubuna bildirim gönder
-                    self.reference_notifier.notify_deposit(user_id, amount, 'user')
+                    # İstatistik bildirimi gönder
+                    self.stats_notifier.notify_deposit(user_id, amount, 'user')
                     
                     # Başarı mesajı
-                    ref_message = f"\n👥 <b>Referans Komisyonu:</b> {ref_commission:.2f}₺ (referans sahibine ödendi)" if ref_commission > 0 else ""
+                    ref_message = f"\n👥 <b>Referans Komisyonu:</b> {ref_commission:.3f}$ (referans sahibine ödendi)" if ref_commission > 0 else ""
                     
                     send_message(user_id, f"""
 <b>✅ BAKİYE YÜKLENDİ!</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-💰 <b>Toplam: {total:.2f}₺</b>
-• Yatırım: {amount:.2f}₺
-• Bonus: {bonus:.2f}₺ (%{DEPOSIT_BONUS_PERCENT}){ref_message}
-• Yeni Normal Bakiye: {new_normal_balance:.2f}₺
-• Yeni Toplam Bakiye: {new_balance:.2f}₺
+💰 <b>Toplam: {amount:.3f}$</b>
+• Yatırım: {amount:.3f}${ref_message}
+• Yeni Bakiye: {new_balance:.3f}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 🎉 <b>Hemen görev yapmaya başlayın!</b>
 """)
@@ -2996,16 +2823,7 @@ Para çekme talebi için admin ile iletişime geçin:
                 # Kullanıcının bakiyesini düş (bloke et)
                 user = self.db.get_user(user_id)
                 new_balance = user.get('balance', 0) - amount
-                new_normal_balance = user.get('normal_balance', 0) - amount
-                
-                self.db.cursor.execute('''
-                    UPDATE users 
-                    SET balance = ?, normal_balance = ?
-                    WHERE user_id = ?
-                ''', (new_balance, new_normal_balance, user_id))
-                
-                # Referans grubuna bildirim gönder
-                self.reference_notifier.notify_withdrawal(user_id, amount, withdrawal_id)
+                self.db.update_user(user_id, {'balance': new_balance})
                 
                 # Admin'e bildirim gönder
                 admin_message = f"""
@@ -3016,9 +2834,9 @@ Para çekme talebi için admin ile iletişime geçin:
 • Talep ID: {withdrawal_id}
 • Kullanıcı: {user.get('name', 'Anonim')}
 • Kullanıcı ID: {user_id}
-• Tutar: {amount:.2f}₺
+• Tutar: {amount:.3f}$
 • TRX Adresi: <code>{trx_address}</code>
-• Zaman: {get_turkey_time().strftime('%H:%M:%S')}
+• Zaman: {get_turkey_time().strftime('%H:%M')}
 
 <b>⚠️ İşlem:</b>
 1. TRX gönderin
@@ -3037,14 +2855,13 @@ Para çekme talebi için admin ile iletişime geçin:
 
 📊 <b>Detaylar:</b>
 • Talep ID: {withdrawal_id}
-• Tutar: {amount:.2f}₺
+• Tutar: {amount:.3f}$
 • TRX Adresi: <code>{trx_address}</code>
 • Durum: İnceleme bekliyor
-• Yeni Normal Bakiye: {new_normal_balance:.2f}₺
-• Yeni Toplam Bakiye: {new_balance:.2f}₺
+• Yeni Bakiye: {new_balance:.3f}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>İşlem 24 saat içinde tamamlanacaktır.</b>
 <b>Admin onayından sonra ödemeniz TRX adresinize gönderilecektir.</b>
@@ -3060,7 +2877,7 @@ Para çekme talebi için admin ile iletişime geçin:
     
     def start_deposit(self, user_id, amount, deposit_type='user'):
         """Depozit işlemi başlat"""
-        trx_amount = amount / self.trx_price
+        trx_amount = amount / self.trx_price if self.trx_price > 0 else amount / 0.12
         
         if deposit_type == 'advertiser':
             message = f"""
@@ -3068,12 +2885,12 @@ Para çekme talebi için admin ile iletişime geçin:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>📊 Ödeme Detayları:</b>
-• Seçilen Tutar: {amount:.2f}₺
-• <b>Toplam Alacak: {amount:.2f}₺</b>
+• Seçilen Tutar: {amount:.3f}$
+• <b>Toplam Alacak: {amount:.3f}$</b>
 
 <b>₿ TRX Bilgileri:</b>
 • Gerekli TRX: {trx_amount:.4f} TRX
-• TRX Fiyatı: {self.trx_price:.2f}₺
+• TRX Fiyatı: {self.trx_price:.3f}$
 
 <b>🔗 TRX Adresi:</b>
 <code>{TRX_ADDRESS}</code>
@@ -3082,29 +2899,25 @@ Para çekme talebi için admin ile iletişime geçin:
 1. Yukarıdaki TRX adresini kopyalayın
 2. Cüzdanınızdan <b>{trx_amount:.4f} TRX</b> gönderin
 3. İşlem tamamlandığında TXID'yi bota gönderin
-4. <b>{amount:.2f}₺</b> reklamveren bakiyenize otomatik yüklenecek
+4. <b>{amount:.3f}$</b> reklamveren bakiyenize otomatik yüklenecek
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <code>/cancel</code> iptal etmek için
 """
         else:
-            bonus = amount * DEPOSIT_BONUS_PERCENT / 100
-            total = amount + bonus
-            
             message = f"""
 <b>💰 BAKİYE YÜKLEME</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 <b>📊 Ödeme Detayları:</b>
-• Seçilen Tutar: {amount:.2f}₺
-• Bonus (%{DEPOSIT_BONUS_PERCENT}): {bonus:.2f}₺
-• <b>Toplam Alacak: {total:.2f}₺</b>
+• Seçilen Tutar: {amount:.3f}$
+• <b>Toplam Alacak: {amount:.3f}$</b>
 
 <b>₿ TRX Bilgileri:</b>
 • Gerekli TRX: {trx_amount:.4f} TRX
-• TRX Fiyatı: {self.trx_price:.2f}₺
+• TRX Fiyatı: {self.trx_price:.3f}$
 
 <b>🔗 TRX Adresi:</b>
 <code>{TRX_ADDRESS}</code>
@@ -3113,10 +2926,10 @@ Para çekme talebi için admin ile iletişime geçin:
 1. Yukarıdaki TRX adresini kopyalayın
 2. Cüzdanınızdan <b>{trx_amount:.4f} TRX</b> gönderin
 3. İşlem tamamlandığında TXID'yi bota gönderin
-4. <b>{total:.2f}₺</b> bakiyenize otomatik yüklenecek
+4. <b>{amount:.3f}$</b> bakiyenize otomatik yüklenecek
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <code>/cancel</code> iptal etmek için
 """
@@ -3124,12 +2937,10 @@ Para çekme talebi için admin ile iletişime geçin:
         deposit_id = hashlib.md5(f"{user_id}{time.time()}".encode()).hexdigest()[:10].upper()
         
         try:
-            bonus_amount = amount * DEPOSIT_BONUS_PERCENT / 100 if deposit_type == 'user' else 0
-            
             self.db.cursor.execute('''
-                INSERT INTO deposits (deposit_id, user_id, amount_try, amount_trx, created_at, trx_price, bonus_amount, deposit_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (deposit_id, user_id, amount, trx_amount, get_turkey_time().isoformat(), self.trx_price, bonus_amount, deposit_type))
+                INSERT INTO deposits (deposit_id, user_id, amount_try, amount_trx, created_at, trx_price, deposit_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (deposit_id, user_id, amount, trx_amount, get_turkey_time().isoformat(), self.trx_price, deposit_type))
             self.db.conn.commit()
             
             self.set_user_state(user_id, 'waiting_txid', {
@@ -3151,11 +2962,12 @@ Para çekme talebi için admin ile iletişime geçin:
 <b>💰 BAKİYE YÜKLEME</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>₿ TRX Fiyatı:</b> {self.trx_price:.2f}₺
-<b>🎁 Bonus Oranı:</b> %{DEPOSIT_BONUS_PERCENT}
+<b>₿ TRX Fiyatı:</b> {self.trx_price:.3f}$
+<b>💰 Minimum:</b> {MIN_DEPOSIT_USD}$
+<b>💰 Maksimum:</b> {MAX_DEPOSIT_USD}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <b>👇 Yüklemek istediğiniz tutarı seçin:</b>
 """
@@ -3163,12 +2975,12 @@ Para çekme talebi için admin ile iletişime geçin:
         markup = {
             'inline_keyboard': [
                 [
-                    {'text': f'25₺ → {25 * (1 + DEPOSIT_BONUS_PERCENT/100):.2f}₺', 'callback_data': 'deposit_amount_25_user'},
-                    {'text': f'50₺ → {50 * (1 + DEPOSIT_BONUS_PERCENT/100):.2f}₺', 'callback_data': 'deposit_amount_50_user'}
+                    {'text': f'2.5$', 'callback_data': 'deposit_amount_2.5_user'},
+                    {'text': f'5$', 'callback_data': 'deposit_amount_5_user'}
                 ],
                 [
-                    {'text': f'100₺ → {100 * (1 + DEPOSIT_BONUS_PERCENT/100):.2f}₺', 'callback_data': 'deposit_amount_100_user'},
-                    {'text': f'200₺ → {200 * (1 + DEPOSIT_BONUS_PERCENT/100):.2f}₺', 'callback_data': 'deposit_amount_200_user'}
+                    {'text': f'7.5$', 'callback_data': 'deposit_amount_7.5_user'},
+                    {'text': f'10$', 'callback_data': 'deposit_amount_10_user'}
                 ],
                 [
                     {'text': '🔙 Geri', 'callback_data': 'menu'}
@@ -3180,30 +2992,27 @@ Para çekme talebi için admin ile iletişime geçin:
     
     def show_withdraw_menu(self, user_id):
         user = self.db.get_user(user_id)
-        normal_balance = user.get('normal_balance', 0)
         
         message = f"""
 <b>🏧 PARA ÇEKME</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>💰 Mevcut Normal Bakiye:</b> {normal_balance:.2f}₺
-<b>💰 Mevcut Toplam Bakiye:</b> {user.get('balance', 0):.2f}₺
+<b>💰 Mevcut Bakiye:</b> {user.get('balance', 0):.3f}$
 
 <b>📋 Şartlar:</b>
-• Minimum çekim: {MIN_WITHDRAW}₺
+• Minimum çekim: {MIN_WITHDRAW}$
 • İşlem süresi: 24 saat
 • Komisyon: Yok
 
 <b>⚠️ ÖNEMLİ:</b>
 • Sadece TRX (Tron) cüzdan adresi kabul edilir!
 • Yanlış cüzdan adresi girerseniz para kaybolur!
-• Sadece normal bakiyenizi çekebilirsiniz!
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 """
         
-        if normal_balance >= MIN_WITHDRAW:
+        if user.get('balance', 0) >= MIN_WITHDRAW:
             markup = {
                 'inline_keyboard': [
                     [
@@ -3227,15 +3036,15 @@ Para çekme talebi için admin ile iletişime geçin:
     def start_withdraw_process(self, user_id):
         """Para çekme işlemini başlat"""
         user = self.db.get_user(user_id)
-        normal_balance = user.get('normal_balance', 0)
+        balance = user.get('balance', 0)
         
-        if normal_balance < MIN_WITHDRAW:
-            send_message(user_id, f"❌ Minimum çekim tutarı {MIN_WITHDRAW}₺!")
+        if balance < MIN_WITHDRAW:
+            send_message(user_id, f"❌ Minimum çekim tutarı {MIN_WITHDRAW}$!")
             self.show_withdraw_menu(user_id)
             return
         
         self.set_user_state(user_id, 'waiting_trx_address', {
-            'amount': normal_balance,
+            'amount': balance,
             'step': 1
         })
         
@@ -3243,8 +3052,8 @@ Para çekme talebi için admin ile iletişime geçin:
 <b>💸 PARA ÇEKME İŞLEMİ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-<b>💰 Çekilecek Tutar:</b> {normal_balance:.2f}₺
-<b>⚠️ Minimum Çekim:</b> {MIN_WITHDRAW}₺
+<b>💰 Çekilecek Tutar:</b> {balance:.3f}$
+<b>⚠️ Minimum Çekim:</b> {MIN_WITHDRAW}$
 
 <b>📝 TRX (Tron) cüzdan adresinizi girin:</b>
 • Örnek: TVJKGbdBQrbvQzq6WZhb3kaGa3LYgVrMSK
@@ -3252,7 +3061,7 @@ Para çekme talebi için admin ile iletişime geçin:
 • Yanlış adres girerseniz para kaybolur!
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <code>/cancel</code> iptal etmek için
 """)
@@ -3274,10 +3083,8 @@ Para çekme talebi için admin ile iletişime geçin:
         if user.get('is_advertiser'):
             advertiser_info = f"""
 <b>👑 Reklamveren Bilgileri:</b>
-• Reklam Bakiye: {user.get('ads_balance', 0):.2f}₺
-• Normal Bakiye: {user.get('normal_balance', 0):.2f}₺
-• Toplam Bakiye: {user.get('balance', 0):.2f}₺
-• Toplam Harcama: {user.get('total_spent_on_ads', 0):.2f}₺
+• Reklamveren Bakiye: {user.get('advertiser_balance', 0):.3f}$
+• Toplam Harcama: {user.get('total_spent_on_ads', 0):.3f}$
 """
         
         message = f"""
@@ -3289,24 +3096,23 @@ Para çekme talebi için admin ile iletişime geçin:
 <b>🔗 Referans Durumu:</b> {ref_status}{ref_info}
 <b>👑 Reklamveren:</b> {advertiser_status}{advertiser_info}
 
-<b>💰 FİNANSAL DURUM</b>
-• Normal Bakiye: {user.get('normal_balance', 0):.2f}₺
-• Reklam Bakiye: {user.get('ads_balance', 0):.2f}₺
-• Toplam Bakiye: {user.get('balance', 0):.2f}₺
-• Toplam Kazanç: {user.get('total_earned', 0):.2f}₺
+<b>💰 Finansal Durum:</b>
+• Normal Bakiye: {user.get('balance', 0):.3f}$
+• Reklam Bakiye: {user.get('ads_balance', 0):.3f}$
+• Toplam Kazanç: {user.get('total_earned', 0):.3f}$
 
-<b>📊 İSTATİSTİKLER</b>
+<b>📊 İstatistikler:</b>
 • Tamamlanan Görev: {user.get('tasks_completed', 0)}
 • Referans Sayısı: {user.get('referrals', 0)}
-• Referans Kazancı: {user.get('ref_earned', 0):.2f}₺
+• Referans Kazancı: {user.get('ref_earned', 0):.3f}$
+• Komisyon Kazancı: {user.get('total_ref_commission', 0):.3f}$
 
-<b>💳 İŞLEMLER</b>
-• Toplam Yatırım: {user.get('total_deposited', 0):.2f}₺
-• Toplam Bonus: {user.get('total_bonus', 0):.2f}₺
-• Toplam Çekim: {user.get('total_withdrawn', 0):.2f}₺
+<b>💳 İşlemler:</b>
+• Toplam Yatırım: {user.get('total_deposited', 0):.3f}$
+• Toplam Çekim: {user.get('total_withdrawn', 0):.3f}$
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 """
         
         markup = {
@@ -3316,11 +3122,10 @@ Para çekme talebi için admin ile iletişime geçin:
                     {'text': '🏧 Para Çek', 'callback_data': 'withdraw'}
                 ],
                 [
-                    {'text': '🔄 Bakiye Dönüştür', 'callback_data': 'convert_balance'},
-                    {'text': '👥 Referans', 'callback_data': 'referral'}
+                    {'text': '👥 Referans', 'callback_data': 'referral'},
+                    {'text': '📊 İstatistik', 'callback_data': 'stats'}
                 ],
                 [
-                    {'text': '📊 İstatistik', 'callback_data': 'stats'},
                     {'text': '🔙 Ana Menü', 'callback_data': 'menu'}
                 ]
             ]
@@ -3351,7 +3156,16 @@ Para çekme talebi için admin ile iletişime geçin:
         completed_refs = ref_stats['completed_refs'] if ref_stats else 0
         total_earned = ref_stats['total_earned'] if ref_stats and ref_stats['total_earned'] else 0
         
-        referral_link = f"https://t.me/GorevYapsamBot?start=ref_{user_id}"
+        # Komisyon istatistikleri
+        self.db.cursor.execute('''
+            SELECT SUM(amount) as total_commission
+            FROM commission_logs 
+            WHERE referrer_id = ? AND status = 'completed'
+        ''', (user_id,))
+        commission_stats = self.db.cursor.fetchone()
+        total_commission = commission_stats['total_commission'] if commission_stats else 0
+        
+        referral_link = f"https://t.me/TaskizBot?start=ref_{user_id}"
         
         message = f"""
 <b>👥 REFERANS SİSTEMİ</b>
@@ -3360,25 +3174,28 @@ Para çekme talebi için admin ile iletişime geçin:
 <b>📊 Referans İstatistikleri:</b>
 • Toplam Referans: {total_refs}
 • Başarılı Referans: {completed_refs}
-• Referans Kazancı: {total_earned:.2f}₺
+• Referans Bonusu: {total_earned:.3f}$
+• Görev Komisyonu: {total_commission:.3f}$
+• <b>Toplam Kazanç: {total_earned + total_commission:.3f}$</b>
 
-<b>💰 Kazanç Sistemi:</b>
-• <b>İlk kayıt referansı:</b> 1₺ bonus
-• <b>Geç katılım referansı:</b> 0.5₺ bonus
-• <b>Depozit referansı:</b> %10 komisyon
+<b>💰 KAZANÇ SİSTEMİ:</b>
+• <b>İlk kayıt referansı:</b> {REF_WELCOME_BONUS}$ bonus
+• <b>Görev komisyonu:</b> %{REF_TASK_COMMISSION*100} her görev başı
+• <b>Depozit komisyonu:</b> %10 her depozit
 
 <b>🔗 Referans Linkiniz:</b>
 <code>{referral_link}</code>
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <b>💡 Nasıl Çalışır:</b>
 1. Linkinizi arkadaşlarınızla paylaşın
 2. Arkadaşlarınız linke tıklayarak kaydolur
-3. <b>Hemen 1₺ bonus</b> alırsınız
-4. Arkadaşınız depozit yaparsa <b>%10 komisyon</b> alırsınız
-5. Sınırsız kazanç fırsatı!
+3. <b>Hemen {REF_WELCOME_BONUS}$ bonus</b> alırsınız
+4. Arkadaşınız görev yaparsa <b>%{REF_TASK_COMMISSION*100} komisyon</b> alırsınız
+5. Arkadaşınız depozit yaparsa <b>%10 komisyon</b> alırsınız
+6. Sınırsız kazanç fırsatı!
 """
         
         markup = {
@@ -3397,7 +3214,7 @@ Para çekme talebi için admin ile iletişime geçin:
         send_message(user_id, message, markup)
     
     def copy_referral_link(self, user_id):
-        referral_link = f"https://t.me/GorevYapsamBot?start=ref_{user_id}"
+        referral_link = f"https://t.me/TaskizBot?start=ref_{user_id}"
         send_message(user_id, f"""
 <b>🔗 REFERANS LİNKİNİZ</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3405,9 +3222,14 @@ Para çekme talebi için admin ile iletişime geçin:
 <code>{referral_link}</code>
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 📋 <b>Yukarıdaki linki kopyalayın ve paylaşın!</b>
+
+💰 <b>Kazançlar:</b>
+• Her referans: {REF_WELCOME_BONUS}$
+• Görev komisyonu: %{REF_TASK_COMMISSION*100}
+• Depozit komisyonu: %10
 
 💡 <b>Paylaşım Önerileri:</b>
 • WhatsApp grupları
@@ -3417,13 +3239,13 @@ Para çekme talebi için admin ile iletişime geçin:
 """)
     
     def share_referral_link(self, user_id):
-        referral_link = f"https://t.me/GorevYapsamBot?start=ref_{user_id}"
+        referral_link = f"https://t.me/TaskizBot?start=ref_{user_id}"
         
         markup = {
             'inline_keyboard': [
                 [
-                    {'text': '📱 WhatsApp', 'url': f'https://wa.me/?text=Görev Yapsam Bot ile para kazanın! {referral_link}'},
-                    {'text': '✈️ Telegram', 'url': f'https://t.me/share/url?url={referral_link}&text=Görev Yapsam Bot ile para kazanın!'}
+                    {'text': '📱 WhatsApp', 'url': f'https://wa.me/?text=TaskizBot ile para kazanın! Her referans {REF_WELCOME_BONUS}$, görev komisyonu %{REF_TASK_COMMISSION*100}. {referral_link}'},
+                    {'text': '✈️ Telegram', 'url': f'https://t.me/share/url?url={referral_link}&text=TaskizBot ile para kazanın! Her referans {REF_WELCOME_BONUS}$, görev komisyonu %{REF_TASK_COMMISSION*100}.'}
                 ],
                 [
                     {'text': '🔙 Geri', 'callback_data': 'referral'}
@@ -3436,7 +3258,7 @@ Para çekme talebi için admin ile iletişime geçin:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 👇 <b>Aşağıdaki butonlardan birine tıklayarak paylaşabilirsiniz:</b>
 """, markup)
@@ -3452,7 +3274,17 @@ Para çekme talebi için admin ile iletişime geçin:
         ''', (user_id,))
         ref_logs = self.db.cursor.fetchall()
         
-        if not ref_logs:
+        self.db.cursor.execute('''
+            SELECT cl.*, u.name as referred_name
+            FROM commission_logs cl
+            LEFT JOIN users u ON cl.referred_id = u.user_id
+            WHERE cl.referrer_id = ? 
+            ORDER BY cl.created_at DESC 
+            LIMIT 10
+        ''', (user_id,))
+        commission_logs = self.db.cursor.fetchall()
+        
+        if not ref_logs and not commission_logs:
             message = f"""
 <b>📊 REFERANS DETAYLARI</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3460,7 +3292,7 @@ Para çekme talebi için admin ile iletişime geçin:
 📭 <b>Henüz referans kaydınız bulunmuyor</b>
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>Referans linkinizi paylaşarak kazanmaya başlayın!</b>
 """
@@ -3470,32 +3302,51 @@ Para çekme talebi için admin ile iletişime geçin:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
             total_earned = 0
             
-            for log in ref_logs:
-                status = "✅" if log['status'] == 'completed' else "⏳" if log['status'] == 'pending' else "❌"
-                reward_type = {
-                    'welcome': 'Hoşgeldin',
-                    'late_join': 'Geç Katılım',
-                    'referral_deposit': 'Depozit Komisyonu'
-                }.get(log['reward_type'], log['reward_type'] or 'Bilinmiyor')
-                
-                if log['status'] == 'completed':
-                    total_earned += log['amount'] or 0
-                
-                message += f"""{status} <b>Referans #{log['log_id']}</b>
+            if ref_logs:
+                message += "\n<b>🎁 REFERANS BONUSLARI:</b>\n"
+                for log in ref_logs:
+                    status = "✅" if log['status'] == 'completed' else "⏳" if log['status'] == 'pending' else "❌"
+                    reward_type = {
+                        'welcome': 'Hoşgeldin',
+                        'late_join': 'Geç Katılım',
+                        'referral_deposit': 'Depozit Komisyonu'
+                    }.get(log['reward_type'], log['reward_type'] or 'Bilinmiyor')
+                    
+                    if log['status'] == 'completed':
+                        total_earned += log['amount'] or 0
+                    
+                    message += f"""{status} <b>Referans #{log['log_id']}</b>
 ├ <b>Tür:</b> {reward_type}
-├ <b>Tutar:</b> {log['amount']:.2f}₺
+├ <b>Tutar:</b> {log['amount']:.3f}$
 ├ <b>Durum:</b> {log['status']}
 └ <b>Tarih:</b> {log['created_at'][:16]}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
             
-            message += f"\n<b>💰 Toplam Kazanç:</b> {total_earned:.2f}₺"
+            if commission_logs:
+                message += "\n<b>💰 GÖREV KOMİSYONLARI:</b>\n"
+                for log in commission_logs:
+                    status = "✅" if log['status'] == 'completed' else "⏳"
+                    referred_name = log['referred_name'] or "Anonim"
+                    
+                    if log['status'] == 'completed':
+                        total_earned += log['amount'] or 0
+                    
+                    message += f"""{status} <b>Komisyon #{log['commission_id']}</b>
+├ <b>Kullanıcı:</b> {referred_name[:15]}
+├ <b>Tutar:</b> {log['amount']:.3f}$
+├ <b>Oran:</b> %{log['commission_rate']*100}
+└ <b>Tarih:</b> {log['created_at'][:16]}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            
+            message += f"\n<b>💰 Toplam Kazanç:</b> {total_earned:.3f}$"
         
         markup = {
             'inline_keyboard': [[
@@ -3519,34 +3370,42 @@ Para çekme talebi için admin ile iletişime geçin:
 1. "🎯 Görev Yap" butonuna tıklayın
 2. Mevcut görevleri görün
 3. Göreve katılın
-4. Gruba/Kanala katılın
+4. Gruba/Kanala katılın veya botu kullanın
 5. Reklamveren katılımınızı doğrulasın
 6. Ödülünüz bakiyenize yüklensin
+7. <b>Referansınız varsa %{REF_TASK_COMMISSION*100} komisyon kazanın!</b>
 
 <b>📢 REKLAM VERME:</b>
 1. "👑 Reklamveren Ol" butonuna tıklayın
-2. "💰 Bakiye Yükle" ile reklam bakiyesi yükleyin
+2. "💰 Bakiye Yükle" ile reklamveren bakiyesi yükleyin
 3. "📢 Görev Oluştur" ile görev oluşturun
 4. Katılımcıların katılımını doğrulayın
 5. Ödemeler otomatik olarak yapılsın
 
-<b>🔄 BAKİYE DÖNÜŞTÜRME:</b>
-1. "🔄 Bakiye Dönüştür" butonuna tıklayın
-2. Reklam bakiyesini normal bakiyeye veya tam tersi dönüştürün
-3. Normal bakiye ile görev yapın veya para çekin
-4. Reklam bakiyesi ile reklam verin
+<b>👥 REFERANS SİSTEMİ:</b>
+• Her referans: {REF_WELCOME_BONUS}$
+• Görev komisyonu: %{REF_TASK_COMMISSION*100}
+• Depozit komisyonu: %10
+• Sınırsız kazanç!
 
 <b>⚠️ ÖNEMLİ UYARILAR:</b>
 • Grubu/Kanalı terk ederseniz ödülünüz geri alınır!
 • Sohbet kanalından ayrılırsanız botu kullanamazsınız!
-• Reklam bakiyesi sadece reklam vermek içindir!
-• Minimum çekim: {MIN_WITHDRAW}₺
+• Reklamveren bakiyesi sadece reklam vermek içindir!
+• Minimum çekim: {MIN_WITHDRAW}$
+
+<b>💰 FİYATLAR:</b>
+• Kanal görevi: {CHANNEL_TASK_PRICE:.3f}$
+• Grup görevi: {GROUP_TASK_PRICE:.3f}$
+• Bot görevi: {BOT_TASK_PRICE:.3f}$
+• Minimum depozit: {MIN_DEPOSIT_USD}$
+• Maksimum depozit: {MAX_DEPOSIT_USD}$
 
 <b>📞 DESTEK:</b>
-Sorularınız için @GorevYapsamBot yazın.
+Sorularınız için @TaskizBot yazın.
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 """
         
         markup = {
@@ -3576,7 +3435,7 @@ Sorularınız için @GorevYapsamBot yazın.
 • 📢 Reklamverenler: {total_advertisers}
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <b>🛠️ YÖNETİM ARAÇLARI</b>
 """
@@ -3625,6 +3484,12 @@ Sorularınız için @GorevYapsamBot yazın.
         self.db.cursor.execute("SELECT SUM(amount) FROM withdrawals WHERE status = 'completed'")
         total_withdraw_amount = self.db.cursor.fetchone()[0] or 0
         
+        self.db.cursor.execute("SELECT COUNT(*) FROM referral_logs WHERE status = 'completed'")
+        total_refs = self.db.cursor.fetchone()[0]
+        
+        self.db.cursor.execute("SELECT SUM(amount) FROM referral_logs WHERE status = 'completed'")
+        total_ref_amount = self.db.cursor.fetchone()[0] or 0
+        
         message = f"""
 <b>📊 DETAYLI İSTATİSTİKLER</b>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3634,17 +3499,21 @@ Sorularınız için @GorevYapsamBot yazın.
 • Reklamverenler: {total_advertisers}
 
 <b>💰 FİNANSAL İSTATİSTİKLER</b>
-• Toplam Yatırım: {total_deposits} adet, {total_deposit_amount:.2f}₺
-• Toplam Çekim: {total_withdrawals} adet, {total_withdraw_amount:.2f}₺
+• Toplam Yatırım: {total_deposits} adet, {total_deposit_amount:.3f}$
+• Toplam Çekim: {total_withdrawals} adet, {total_withdraw_amount:.3f}$
 
 <b>📢 GÖREV İSTATİSTİKLERİ</b>
 • Toplam Görev: {total_tasks}
 
+<b>👥 REFERANS İSTATİSTİKLERİ</b>
+• Toplam Referans: {total_refs}
+• Toplam Referans Bonusu: {total_ref_amount:.3f}$
+
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 <b>⏰ SİSTEM DURUMU:</b> ✅ ÇALIŞIYOR
-<b>🔄 SON KONTROL:</b> {get_turkey_time().strftime('%H:%M:%S')}
+<b>🔄 SON KONTROL:</b> {get_turkey_time().strftime('%H:%M')}
 """
         
         markup = {
@@ -3672,9 +3541,8 @@ Sorularınız için @GorevYapsamBot yazın.
             message = "<b>📢 SON 10 REKLAMVEREN</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             for adv in advertisers:
                 message += f"""👤 <b>{adv['name'][:15]}</b>
-├ <b>Reklam Bakiyesi:</b> {adv['ads_balance']:.1f}₺
-├ <b>Normal Bakiye:</b> {adv['normal_balance']:.1f}₺
-├ <b>Toplam Harcama:</b> {adv['total_spent_on_ads']:.1f}₺
+├ <b>Reklam Bakiyesi:</b> {adv['advertiser_balance']:.3f}$
+├ <b>Toplam Harcama:</b> {adv['total_spent_on_ads']:.3f}$
 └ <b>Kayıt:</b> {adv['created_at'][:10]}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -3705,8 +3573,7 @@ Sorularınız için @GorevYapsamBot yazın.
                 referred = "✅" if usr['referred_by'] else "❌"
                 advertiser = "👑" if usr['is_advertiser'] else "👤"
                 message += f"""{advertiser} <b>{usr['name'][:15]}</b>
-├ <b>Normal Bakiye:</b> {usr['normal_balance']:.1f}₺
-├ <b>Reklam Bakiye:</b> {usr['ads_balance']:.1f}₺
+├ <b>Bakiye:</b> {usr['balance']:.3f}$
 ├ <b>Referans:</b> {usr['referrals']} {referred}
 ├ <b>Reklamveren:</b> {'Evet' if usr['is_advertiser'] else 'Hayır'}
 └ <b>Kayıt:</b> {usr['created_at'][:10]}
@@ -3739,8 +3606,8 @@ Sorularınız için @GorevYapsamBot yazın.
                 status = "✅" if dep['status'] == 'completed' else "⏳" if dep['status'] == 'pending' else "❌"
                 deposit_type = "👑 Reklamveren" if dep['deposit_type'] == 'advertiser' else "👤 Normal"
                 message += f"""{status} <b>Depozit #{dep['deposit_id'][:8]}</b>
-├ <b>Tutar:</b> {dep['amount_try']:.2f}₺
-├ <b>Bonus:</b> {dep['bonus_amount']:.2f}₺
+├ <b>Tutar:</b> {dep['amount_try']:.3f}$
+├ <b>TRX:</b> {dep['amount_trx']:.4f}
 ├ <b>Tür:</b> {deposit_type}
 └ <b>Durum:</b> {dep['status']}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3775,7 +3642,7 @@ Sorularınız için @GorevYapsamBot yazın.
                 user_name = wd['name'] or "Anonim"
                 message += f"""{status} <b>Talep #{wd['withdrawal_id'][:8]}</b>
 ├ <b>Kullanıcı:</b> {user_name[:15]}
-├ <b>Tutar:</b> {wd['amount']:.2f}₺
+├ <b>Tutar:</b> {wd['amount']:.3f}$
 ├ <b>TRX Adresi:</b> <code>{wd['trx_address'][:20]}...</code>
 └ <b>Durum:</b> {wd['status']}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3808,7 +3675,7 @@ Sorularınız için @GorevYapsamBot yazın.
 📭 <b>Henüz hiç göreve katılmadınız</b>
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>İlk görevinize katılarak para kazanmaya başlayın!</b>
 """
@@ -3818,14 +3685,20 @@ Sorularınız için @GorevYapsamBot yazın.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
             total_earned = 0
             
             for part in participations:
-                task_type = "👥 Grup" if part['task_type'] == 'group' else "📢 Kanal"
+                if part['task_type'] == 'channel':
+                    task_type = "📢 Kanal"
+                elif part['task_type'] == 'group':
+                    task_type = "👥 Grup"
+                else:
+                    task_type = "🤖 Bot"
+                
                 status_icon = "✅" if part['status'] == 'verified' else "⏳" if part['status'] == 'pending' else "❌" if part['status'] == 'left' else "❓"
                 status_text = {
                     'verified': 'Tamamlandı',
@@ -3836,15 +3709,15 @@ Sorularınız için @GorevYapsamBot yazın.
                 if part['status'] == 'verified':
                     total_earned += part['reward_paid'] or 0
                 
-                message += f"""{status_icon} <b>{part['target_name'][:20]}</b>
+                message += f"""{status_icon} <b>{part.get('target_name', 'Bot Görevi')[:20]}</b>
 ├ <b>Tür:</b> {task_type}
-├ <b>Ödül:</b> {part['reward_amount']:.2f}₺
+├ <b>Ödül:</b> {part['reward_amount']:.3f}$
 ├ <b>Durum:</b> {status_text}
 └ <b>Tarih:</b> {part['joined_at'][:16]}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
             
-            message += f"\n<b>💰 Toplam Kazanç:</b> {total_earned:.2f}₺"
+            message += f"\n<b>💰 Toplam Kazanç:</b> {total_earned:.3f}$"
         
         markup = {
             'inline_keyboard': [[
@@ -3870,10 +3743,20 @@ class BackgroundChecker:
         self.running = False
     
     def run(self):
+        last_daily_stats = None
+        
         while self.running:
             try:
+                now = get_turkey_time()
+                
+                # Günlük istatistikleri gönder (her gün saat 09:00'da)
+                if now.hour == 9 and (last_daily_stats is None or last_daily_stats.date() != now.date()):
+                    self.send_daily_stats()
+                    last_daily_stats = now
+                
                 self.check_channel_memberships()
-                time.sleep(60)  # Her 60 saniyede bir kontrol et
+                time.sleep(60)
+                
             except Exception as e:
                 print(f"❌ Arka plan kontrol hatası: {e}")
                 time.sleep(30)
@@ -3927,7 +3810,7 @@ class BackgroundChecker:
 • Kazançlarınız düşülebilir
 
 💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
-📢 <b>Referans:</b> @{REFERENCE_GROUP}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
 
 💡 <b>Tekrar katılmak için:</b>
 1. @{MANDATORY_CHANNEL} kanalına katılın
@@ -3940,15 +3823,94 @@ class BackgroundChecker:
             
         except Exception as e:
             print(f"❌ Kanal kontrol hatası: {e}")
+    
+    def send_daily_stats(self):
+        """Günlük istatistikleri gönder"""
+        try:
+            now = get_turkey_time()
+            
+            # Bugünkü kayıtlar
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            self.db.cursor.execute('''
+                SELECT COUNT(*) as total, 
+                       SUM(CASE WHEN is_referred = 1 THEN 1 ELSE 0 END) as referred
+                FROM users 
+                WHERE created_at > ?
+            ''', (today_start,))
+            
+            stats = self.db.cursor.fetchone()
+            total_today = stats['total'] or 0
+            referred_today = stats['referred'] or 0
+            
+            # Toplam kullanıcı
+            self.db.cursor.execute('''
+                SELECT COUNT(*) as total_users,
+                       SUM(CASE WHEN is_referred = 1 THEN 1 ELSE 0 END) as total_referred
+                FROM users
+            ''')
+            
+            total_stats = self.db.cursor.fetchone()
+            total_users = total_stats['total_users'] or 0
+            total_referred = total_stats['total_referred'] or 0
+            
+            # Bugünkü görevler
+            self.db.cursor.execute('''
+                SELECT COUNT(*) as total_tasks,
+                       SUM(total_spent) as total_spent
+                FROM tasks 
+                WHERE created_at > ?
+            ''', (today_start,))
+            
+            task_stats = self.db.cursor.fetchone()
+            today_tasks = task_stats['total_tasks'] or 0
+            today_spent = task_stats['total_spent'] or 0
+            
+            message = f"""
+<b>📊 GÜNLÜK İSTATİSTİKLER</b>
+<b>📅 Tarih:</b> {now.strftime('%d.%m.%Y')}
+<b>⏰ Saat:</b> {now.strftime('%H:%M')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+<b>👥 BUGÜN KAYITLAR</b>
+├ <b>Toplam Kayıt:</b> {total_today}
+├ <b>Referans ile:</b> {referred_today}
+└ <b>Normal Kayıt:</b> {total_today - referred_today}
+
+<b>📢 BUGÜN GÖREVLER</b>
+├ <b>Toplam Görev:</b> {today_tasks}
+└ <b>Toplam Harcama:</b> {today_spent:.3f}$
+
+<b>📈 TOPLAM İSTATİSTİKLER</b>
+├ <b>Toplam Kullanıcı:</b> {total_users}
+├ <b>Referanslı Kullanıcı:</b> {total_referred}
+└ <b>Referans Oranı:</b> {(total_referred/total_users*100 if total_users > 0 else 0):.1f}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+<b>💰 REFERANS SİSTEMİ</b>
+├ <b>Referans Bonusu:</b> {REF_WELCOME_BONUS}$
+├ <b>Görev Komisyonu:</b> %{REF_TASK_COMMISSION*100}
+└ <b>Depozit Komisyonu:</b> %10
+
+💬 <b>Sohbet:</b> @{MANDATORY_CHANNEL}
+📊 <b>İstatistik:</b> @{STATS_CHANNEL}
+
+💡 <b>Referans sistemi aktif!</b>
+"""
+            
+            # İstatistik kanalına gönder
+            send_message(f"@{STATS_CHANNEL}", message)
+            
+        except Exception as e:
+            print(f"❌ Günlük istatistik hatası: {e}")
 
 # Ana Program
 def main():
     print(f"""
     ╔════════════════════════════════════════════════════════════════╗
-    ║                    GÖREV YAPSAM BOT v22.0                      ║
-    ║   NORMAL + REKLAM BAKİYESİ + BAKİYE DÖNÜŞTÜRME +               ║
-    ║   ZORUNLU KANAL KONTROLÜ + REFERANS GRUBU BİLDİRİMLERİ         ║
-    ║   GERÇEK ZAMANLI BİLDİRİMLER + TÜM İŞLEMLER REFERANS GRUBUNDA  ║
+    ║                    TASKİZBOT v2.0                              ║
+    ║   TRX DEPOZİT + OTOMATİK GÖREV + REKLAMVEREN SİSTEMİ           ║
+    ║   + GRUP/KANAL TERK CEZASI + ZORUNLU KANAL KONTROLÜ           ║
+    ║   + GERÇEK ZAMANLI İSTATİSTİK + REFERANS SİSTEMİ              ║
     ╚════════════════════════════════════════════════════════════════╝
     """)
     
@@ -3960,16 +3922,16 @@ def main():
     print("✅ Bot başarıyla başlatıldı!")
     print(f"👑 Admin ID: {ADMIN_ID}")
     print(f"💬 Zorunlu Kanal: @{MANDATORY_CHANNEL}")
-    print(f"📢 Referans Grubu: @{REFERENCE_GROUP}")
+    print(f"📊 İstatistik Kanalı: @{STATS_CHANNEL}")
     print(f"₿ TRX Adresi: {TRX_ADDRESS}")
-    print("💰 Min Depozit: 25₺, Max: 200₺")
-    print(f"💸 Minimum Çekim: {MIN_WITHDRAW}₺")
-    print("🎁 Bonuslar: %35 Normal Depozit")
-    print("👥 Referans Bonusu: 1₺ her davet")
-    print("📢 Görev Ücretleri: Grup 0.5₺, Kanal 1.25₺")
+    print("💰 Min Depozit: 2.5$, Max: 10$")
+    print(f"💸 Minimum Çekim: {MIN_WITHDRAW}$")
+    print("📢 Görev Ücretleri: Kanal 0.03$, Grup 0.02$, Bot 0.01$")
+    print("👥 Referans Bonusu: 0.005$ her davet")
+    print("💰 Görev Komisyonu: %25 her görev başı")
     print("⚠️ Terk Cezası: Grubu/Kanalı terk edenler ödülü kaybeder")
-    print("🔄 Bakiye Dönüşümü: Reklam ↔ Normal bakiye")
-    print("📊 Referans Grubu Bildirimleri: Aktif")
+    print("🎯 Reklamveren Sistemi: Aktif (varsayılan 2.5$ bakiye)")
+    print("📊 İstatistik Bildirimleri: Aktif")
     print("🔄 Arka Plan Kontrol: Aktif")
     print("🔗 Telegram'da /start yazarak test edin")
     
