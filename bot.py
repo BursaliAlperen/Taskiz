@@ -15,6 +15,7 @@ from typing import Optional, Dict, List, Tuple, Any
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = os.environ.get("ADMIN_ID", "7904032877")
 SUPPORT_USERNAME = "@AlperenTHE"
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # Webhook URL'si
 
 # Zorunlu Kanallar
 MANDATORY_CHANNELS = [
@@ -81,13 +82,39 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return jsonify({"status": "online", "bot": "TaskizBot v3.1"})
+    return jsonify({"status": "online", "bot": "TaskizBot v3.2", "webhook": bool(WEBHOOK_URL)})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     update = request.json
     bot.handle_update(update)
     return jsonify({"status": "ok"})
+
+@app.route('/setwebhook', methods=['GET'])
+def set_webhook():
+    """Webhook'u manuel ayarlama endpoint'i"""
+    if not WEBHOOK_URL:
+        return jsonify({"error": "WEBHOOK_URL env değişkeni ayarlanmamış"})
+    
+    url = f"{WEBHOOK_URL}/webhook"
+    response = requests.get(f"{BASE_URL}setWebhook?url={url}")
+    
+    # Webhook bilgilerini al
+    info = requests.get(f"{BASE_URL}getWebhookInfo").json()
+    
+    return jsonify({
+        "set_webhook": response.json(),
+        "webhook_info": info
+    })
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "bot": "TaskizBot"
+    })
 
 def get_turkey_time():
     """Türkiye saatini döndür"""
@@ -122,7 +149,9 @@ LANGUAGE_TEXTS = {
         'min_deposit': f"Minimum yükleme: ${MIN_DEPOSIT_USD}",
         'contact_support': f"📞 Destek: {SUPPORT_USERNAME}",
         'error': "❌ Hata",
-        'success': "✅ Başarılı"
+        'success': "✅ Başarılı",
+        'loading': "⏳ Yükleniyor...",
+        'welcome_back': "👋 Tekrar Hoş Geldiniz!"
     },
     'en': {
         'welcome': "🤖 *Welcome to TaskizBot!*\n\nJoin channels and complete tasks to earn money.",
@@ -151,7 +180,9 @@ LANGUAGE_TEXTS = {
         'min_deposit': f"Minimum deposit: ${MIN_DEPOSIT_USD}",
         'contact_support': f"📞 Support: {SUPPORT_USERNAME}",
         'error': "❌ Error",
-        'success': "✅ Success"
+        'success': "✅ Success",
+        'loading': "⏳ Loading...",
+        'welcome_back': "👋 Welcome Back!"
     },
     'ru': {
         'welcome': "🤖 *Добро пожаловать в TaskizBot!*\n\nПрисоединяйтесь к каналам и выполняйте задания, чтобы зарабатывать деньги.",
@@ -180,7 +211,9 @@ LANGUAGE_TEXTS = {
         'min_deposit': f"Минимальный депозит: ${MIN_DEPOSIT_USD}",
         'contact_support': f"📞 Поддержка: {SUPPORT_USERNAME}",
         'error': "❌ Ошибка",
-        'success': "✅ Успешно"
+        'success': "✅ Успешно",
+        'loading': "⏳ Загрузка...",
+        'welcome_back': "👋 С возвращением!"
     },
     'bn': {
         'welcome': "🤖 *TaskizBot-এ স্বাগতম!*\n\nটাকা উপার্জন করতে চ্যানেলে যোগ দিন এবং টাস্ক সম্পন্ন করুন।",
@@ -209,7 +242,9 @@ LANGUAGE_TEXTS = {
         'min_deposit': f"ন্যূনতম ডিপোজিট: ${MIN_DEPOSIT_USD}",
         'contact_support': f"📞 সমর্থন: {SUPPORT_USERNAME}",
         'error': "❌ ত্রুটি",
-        'success': "✅ সফল"
+        'success': "✅ সফল",
+        'loading': "⏳ লোড হচ্ছে...",
+        'welcome_back': "👋 পুনরায় স্বাগতম!"
     }
 }
 
@@ -267,9 +302,11 @@ def answer_callback_query(callback_query_id, text=None, show_alert=False):
         payload['show_alert'] = show_alert
     
     try:
-        requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=5)
+        return response
     except Exception as e:
         print(f"❌ Callback yanıtlama hatası: {e}")
+        return None
 
 def get_chat_member(chat_id, user_id):
     """Kullanıcının kanal üyeliğini kontrol et"""
@@ -300,9 +337,11 @@ def delete_message(chat_id, message_id):
     }
     
     try:
-        requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=5)
+        return response.json()
     except Exception as e:
         print(f"❌ Mesaj silme hatası: {e}")
+        return None
 
 # Database Sınıfı
 class Database:
@@ -339,11 +378,13 @@ class Database:
                 user_id INTEGER,
                 channel_username TEXT,
                 joined INTEGER DEFAULT 0,
-                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, channel_username)
             )
         ''')
         
         self.connection.commit()
+        print("✅ Veritabanı tabloları oluşturuldu/doğrulandı")
     
     def get_user(self, user_id):
         """Kullanıcı bilgilerini getir"""
@@ -404,17 +445,15 @@ class Database:
         ''', (user_id, channel_username, joined))
         self.connection.commit()
     
-    def get_last_channel_check(self, user_id, channel_username):
-        """Son kanal kontrolünü getir"""
+    def get_all_channel_checks(self, user_id):
+        """Kullanıcının tüm kanal kontrollerini getir"""
         self.cursor.execute('''
             SELECT * FROM channel_checks 
-            WHERE user_id = ? AND channel_username = ?
-            ORDER BY checked_at DESC LIMIT 1
-        ''', (user_id, channel_username))
-        row = self.cursor.fetchone()
-        if row:
-            return dict(row)
-        return None
+            WHERE user_id = ?
+            ORDER BY channel_username
+        ''', (user_id,))
+        rows = self.cursor.fetchall()
+        return [dict(row) for row in rows]
 
 # Bot Sınıfı
 class TaskizBot:
@@ -462,8 +501,8 @@ class TaskizBot:
         first_name = message['from'].get('first_name', '')
         last_name = message['from'].get('last_name', '')
         
-        # Kullanıcıyı oluştur
-        user = self.db.create_user(user_id, username, first_name, last_name)
+        # Kullanıcıyı oluştur (varsayılan Türkçe)
+        user = self.db.create_user(user_id, username, first_name, last_name, 'tr')
         
         # Dil seçimi göster
         self.show_language_selection(user_id)
@@ -491,60 +530,63 @@ class TaskizBot:
         """Callback query'leri işle"""
         data = callback_query['data']
         user_id = callback_query['from']['id']
+        callback_id = callback_query['id']
         
         try:
             if data.startswith('lang_'):
                 language = data.split('_')[1]
-                self.handle_language_selection(user_id, language, callback_query['id'])
+                self.handle_language_selection(user_id, language, callback_id)
                 
             elif data == 'check_channels':
-                self.check_user_channels(user_id, callback_query['id'])
+                answer_callback_query(callback_id, "🔍 Kanallar kontrol ediliyor...")
+                time.sleep(0.5)
+                self.check_user_channels(user_id)
                 
             elif data == 'show_main_menu':
                 user = self.db.get_user(user_id)
                 if user:
                     self.show_main_menu(user_id, user['language'])
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_profile':
                 self.show_profile(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_balance':
                 self.show_balance(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_tasks':
                 self.show_tasks(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_withdraw':
                 self.show_withdraw(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_deposit':
                 self.show_deposit(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_referral':
                 self.show_referral(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_channels':
                 self.show_channels(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data == 'show_help':
                 self.show_help(user_id)
-                answer_callback_query(callback_query['id'])
+                answer_callback_query(callback_id)
                 
             elif data.startswith('user_type_'):
                 user_type = data.split('_')[2]
-                self.handle_user_type_selection(user_id, user_type, callback_query['id'])
+                self.handle_user_type_selection(user_id, user_type, callback_id)
         
         except Exception as e:
             print(f"❌ Callback işleme hatası: {e}")
-            answer_callback_query(callback_query['id'], "❌ Bir hata oluştu!")
+            answer_callback_query(callback_id, "❌ Bir hata oluştu!")
     
     def handle_language_selection(self, user_id, language, callback_id):
         """Dil seçimini işle"""
@@ -585,11 +627,13 @@ class TaskizBot:
         
         # Kanal kontrol ekranını göster
         user = self.db.get_user(user_id)
-        self.show_channels(user_id)
         
         answer_callback_query(callback_id, "✅ Kullanıcı türü seçildi!")
+        time.sleep(0.5)
+        
+        self.show_channels(user_id)
     
-    def check_user_channels(self, user_id, callback_id=None):
+    def check_user_channels(self, user_id):
         """Kullanıcının kanallara katılımını kontrol et"""
         user = self.db.get_user(user_id)
         if not user:
@@ -601,6 +645,7 @@ class TaskizBot:
         not_joined = []
         all_joined = True
         
+        # Tüm kanalları kontrol et
         for channel in MANDATORY_CHANNELS:
             joined = get_chat_member(f"@{channel['username']}", user_id)
             self.db.save_channel_check(user_id, channel['username'], joined)
@@ -608,6 +653,8 @@ class TaskizBot:
             if not joined:
                 not_joined.append(channel)
                 all_joined = False
+            else:
+                print(f"✅ Kullanıcı {user_id} @{channel['username']} kanalına katılmış")
         
         if all_joined:
             text = texts['all_channels_joined']
@@ -619,17 +666,11 @@ class TaskizBot:
                 ]
             }
             
-            if callback_id:
-                answer_callback_query(callback_id, "✅ Tüm kanallara katıldınız!")
-                time.sleep(0.5)
-            
             send_message(user_id, text, reply_markup=keyboard)
             
-            # İlk kez tüm kanallara katıldıysa ana menüyü göster
-            if 'first_channel_check' not in self.user_states.get(user_id, {}):
-                self.user_states[user_id] = {'first_channel_check': True}
-                time.sleep(1)
-                self.show_main_menu(user_id, language)
+            # Ana menüyü göster
+            time.sleep(1)
+            self.show_main_menu(user_id, language)
         else:
             text = texts['not_joined_all'] + "\n\n"
             
@@ -649,9 +690,6 @@ class TaskizBot:
             ])
             
             keyboard = {'inline_keyboard': buttons}
-            
-            if callback_id:
-                answer_callback_query(callback_id, "❌ Hala bazı kanallara katılmadınız!")
             
             send_message(user_id, text, reply_markup=keyboard)
     
@@ -697,45 +735,39 @@ class TaskizBot:
             else:
                 self.show_main_menu(user_id, language)
         
-        elif text == texts['check_channels']:
+        elif text == '/check' or text == texts['check_channels']:
             self.check_user_channels(user_id)
         
-        elif text == texts['channels']:
+        elif text == '/channels' or text == texts['channels']:
             self.show_channels(user_id)
         
-        elif text == texts['balance']:
+        elif text == '/balance' or text == texts['balance']:
             self.show_balance(user_id)
         
-        elif text == texts['tasks']:
+        elif text == '/tasks' or text == texts['tasks']:
             self.show_tasks(user_id)
         
-        elif text == texts['withdraw']:
+        elif text == '/withdraw' or text == texts['withdraw']:
             self.show_withdraw(user_id)
         
-        elif text == texts['deposit']:
+        elif text == '/deposit' or text == texts['deposit']:
             self.show_deposit(user_id)
         
-        elif text == texts['profile']:
+        elif text == '/profile' or text == texts['profile']:
             self.show_profile(user_id)
         
-        elif text == texts['referral']:
+        elif text == '/referral' or text == texts['referral']:
             self.show_referral(user_id)
         
-        elif text == texts['help']:
+        elif text == '/help' or text == texts['help']:
             self.show_help(user_id)
         
-        elif text == texts['back']:
+        elif text == '/menu' or text == texts['back']:
             self.show_main_menu(user_id, language)
         
         else:
-            # Özel durumlar
-            if user_id in self.user_states:
-                state = self.user_states[user_id]
-                # State işlemleri burada
-                pass
-            else:
-                # Ana menüyü göster
-                self.show_main_menu(user_id, language)
+            # Ana menüyü göster
+            self.show_main_menu(user_id, language)
     
     def check_all_channels(self, user_id):
         """Tüm kanallara katılıp katılmadığını kontrol et"""
@@ -1029,9 +1061,29 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     
     # Webhook ayarla
-    webhook_url = os.environ.get('WEBHOOK_URL', '')
-    if webhook_url:
-        response = requests.get(f"{BASE_URL}setWebhook?url={webhook_url}/webhook")
-        print(f"Webhook ayarlandı: {response.json()}")
+    if WEBHOOK_URL:
+        try:
+            webhook_info = requests.get(f"{BASE_URL}getWebhookInfo").json()
+            print(f"📊 Mevcut webhook bilgisi: {webhook_info}")
+            
+            # Mevcut webhook'u sil
+            delete_response = requests.get(f"{BASE_URL}deleteWebhook").json()
+            print(f"🗑️ Webhook silindi: {delete_response}")
+            
+            # Yeni webhook'u ayarla
+            url = f"{WEBHOOK_URL}/webhook"
+            set_response = requests.get(f"{BASE_URL}setWebhook?url={url}").json()
+            print(f"✅ Webhook ayarlandı: {set_response}")
+            
+            # Webhook bilgilerini tekrar kontrol et
+            time.sleep(1)
+            info = requests.get(f"{BASE_URL}getWebhookInfo").json()
+            print(f"📋 Yeni webhook bilgisi: {info}")
+            
+        except Exception as e:
+            print(f"❌ Webhook ayarlama hatası: {e}")
+    else:
+        print("⚠️ WEBHOOK_URL ayarlanmamış. Polling modunda çalışacak.")
     
-    app.run(host='0.0.0.0', port=port, debug=False)
+    print(f"🚀 Bot {port} portunda başlatılıyor...")
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
