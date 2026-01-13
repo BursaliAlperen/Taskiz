@@ -100,7 +100,7 @@ def get_turkey_time():
     """Türkiye saatini döndür"""
     return datetime.now(TURKEY_TZ)
 
-# Dil Metinleri
+# Dil Metinleri - TAM ÇEVİRİ
 LANGUAGE_TEXTS = {
     'tr': {
         'menu': {
@@ -120,7 +120,8 @@ LANGUAGE_TEXTS = {
             'channels': "📢 Zorunlu Kanallar",
             'join_channels': "📢 Kanallara Katıl",
             'create_task': "➕ Görev Oluştur",
-            'my_tasks': "📋 Görevlerim"
+            'my_tasks': "📋 Görevlerim",
+            'total_earned': "💵 Toplam Kazanç"
         },
         'buttons': {
             'do_task': "🎯 Görev Yap",
@@ -221,7 +222,8 @@ LANGUAGE_TEXTS = {
             'channels': "📢 Mandatory Channels",
             'join_channels': "📢 Join Channels",
             'create_task': "➕ Create Task",
-            'my_tasks': "📋 My Tasks"
+            'my_tasks': "📋 My Tasks",
+            'total_earned': "💵 Total Earnings"
         },
         'buttons': {
             'do_task': "🎯 Do Task",
@@ -322,7 +324,8 @@ LANGUAGE_TEXTS = {
             'channels': "📢 Обязательные каналы",
             'join_channels': "📢 Присоединиться к каналам",
             'create_task': "➕ Создать задание",
-            'my_tasks': "📋 Мои задания"
+            'my_tasks': "📋 Мои задания",
+            'total_earned': "💵 Общий заработок"
         },
         'buttons': {
             'do_task': "🎯 Выполнить задание",
@@ -423,7 +426,8 @@ LANGUAGE_TEXTS = {
             'channels': "📢 বাধ্যতামূলক চ্যানেল",
             'join_channels': "📢 চ্যানেলে যোগ দিন",
             'create_task': "➕ টাস্ক তৈরি করুন",
-            'my_tasks': "📋 আমার টাস্ক"
+            'my_tasks': "📋 আমার টাস্ক",
+            'total_earned': "💵 মোট আয়"
         },
         'buttons': {
             'do_task': "🎯 টাস্ক করুন",
@@ -1043,8 +1047,16 @@ class TaskizBot:
     
     def ask_user_type(self, user_id):
         """Kullanıcıdan tipini seçmesini iste"""
-        # İlk önce dil seçeneği sun (çok dilli mesaj)
-        welcome_text = """
+        user = self.db.get_user(user_id)
+        current_lang = user.get('language', 'tr') if user else 'tr'
+        
+        # Kullanıcının mevcut dilinde veya çok dilli mesaj
+        if user and current_lang in LANGUAGE_TEXTS:
+            texts = LANGUAGE_TEXTS[current_lang]
+            welcome_text = texts['registration']['welcome']
+        else:
+            # Çok dilli mesaj
+            welcome_text = """
 🎯 *Welcome! Please select your user type:*
         
 👤 *Earner (Para Kazanan)*
@@ -1057,47 +1069,8 @@ class TaskizBot:
 • Load advertising budget
 • Reach audience and promote your product
         
-*Hoş Geldiniz! Lütfen kullanıcı türünüzü seçin:*
-        
-👤 *Para Kazanan*
-• Görev yaparak para kazan
-• Reklam izle, kanallara katıl
-• Günlük bonuslar al
-        
-📢 *Reklamveren*
-• Görev oluştur ve yayınla
-• Reklam bütçesi yükle
-• Kitleye ulaş ve ürününü tanıt
-        
-*Добро пожаловать! Пожалуйста, выберите тип пользователя:*
-        
-👤 *Зарабатывающий*
-• Зарабатывайте деньги, выполняя задания
-• Смотрите рекламу, присоединяйтесь к каналам
-• Получайте ежедневные бонусы
-        
-📢 *Рекламодатель*
-• Создавайте и публикуйте задания
-• Пополняйте рекламный бюджет
-• Достигайте аудиторию и продвигайте свой продукт
-        
-*স্বাগতম! অনুগ্রহ করে আপনার ব্যবহারকারীর ধরণ নির্বাচন করুন:*
-        
-👤 *আয়কারী*
-• টাস্ক সম্পূর্ণ করে অর্থ উপার্জন করুন
-• বিজ্ঞাপন দেখুন, চ্যানেলে যোগ দিন
-• দৈনিক বোনাস পান
-        
-📢 *বিজ্ঞাপনদাতা*
-• টাস্ক তৈরি করুন এবং প্রকাশ করুন
-• বিজ্ঞাপন বাজেট লোড করুন
-• দর্শকদের কাছে পৌঁছান এবং আপনার পণ্য প্রচার করুন
-        
 What type of user do you want to be?
-Hangi tür kullanıcı olmak istiyorsunuz?
-Каким типом пользователя вы хотите быть?
-আপনি কি ধরণের ব্যবহারকারী হতে চান?
-        """
+            """
         
         keyboard = {
             'inline_keyboard': [
@@ -1197,6 +1170,21 @@ Lütfen dilinizi seçin
             elif data.startswith('confirm_change_to_'):
                 new_type = data.split('_')[3]  # earner veya advertiser
                 self.confirm_user_type_change(user_id, new_type, callback_query['id'])
+                
+            elif data == 'check_channels':
+                user = self.db.get_user(user_id)
+                if user:
+                    if self.check_mandatory_channels(user_id):
+                        texts = LANGUAGE_TEXTS.get(user.get('language', 'tr'), LANGUAGE_TEXTS['tr'])
+                        send_message(user_id, texts['success']['channels_checked'])
+                        self.show_main_menu(user_id, user.get('language', 'tr'), user.get('user_type', 'earner'))
+                    else:
+                        self.show_mandatory_channels(user_id, user.get('language', 'tr'))
+                answer_callback_query(callback_query['id'])
+                
+            elif data.startswith('join_task_'):
+                task_id = int(data.split('_')[2])
+                self.handle_task_join(user_id, task_id, callback_query['id'])
         
         except Exception as e:
             print(f"❌ Callback işleme hatası: {e}")
@@ -1351,11 +1339,12 @@ Lütfen dilinizi seçin
             keyboard = {
                 'keyboard': [
                     [texts['buttons']['create_task']],
-                    [texts['buttons']['advertiser_balance'], texts['buttons']['load_balance']],
+                    [texts['buttons']['balance'], texts['buttons']['load_balance']],
                     [texts['buttons']['my_tasks'], texts['buttons']['stats']],
                     [texts['buttons']['profile'], texts['buttons']['help']]
                 ],
-                'resize_keyboard': True
+                'resize_keyboard': True,
+                'one_time_keyboard': False
             }
             
             text = f"""
@@ -1373,7 +1362,8 @@ Hoş geldiniz! Görev oluşturup kitleye ulaşabilirsiniz.
                     [texts['buttons']['referral'], texts['buttons']['stats']],
                     [texts['buttons']['profile'], texts['buttons']['help']]
                 ],
-                'resize_keyboard': True
+                'resize_keyboard': True,
+                'one_time_keyboard': False
             }
             
             text = f"""
@@ -1512,7 +1502,7 @@ Yeni türünüzü seçin:
         # Aktif görev kontrolü
         self.db.cursor.execute('''
             SELECT COUNT(*) FROM task_participations 
-            WHERE user_id = ? AND status = 'active'
+            WHERE user_id = ? AND status = 'pending' OR status = 'active'
         ''', (user_id,))
         active_tasks = self.db.cursor.fetchone()[0]
         
@@ -1790,6 +1780,32 @@ Adres: {address}
         """
         send_message(ADMIN_ID, admin_text)
     
+    def handle_task_join(self, user_id, task_id, callback_id):
+        """Göreve katılma işlemi"""
+        user = self.db.get_user(user_id)
+        if not user:
+            answer_callback_query(callback_id, "❌ Kullanıcı bulunamadı!")
+            return
+        
+        language = user.get('language', 'tr')
+        texts = LANGUAGE_TEXTS.get(language, LANGUAGE_TEXTS['tr'])
+        
+        # Göreve katıl
+        success, message = self.db.join_task(task_id, user_id)
+        
+        if success:
+            answer_callback_query(callback_id, texts['success']['task_joined'], show_alert=True)
+        else:
+            error_msg = "❌ Hata!"
+            if message == "already_joined":
+                error_msg = texts['errors']['already_joined']
+            elif message == "task_not_found":
+                error_msg = texts['errors']['not_found']
+            elif message == "task_full":
+                error_msg = "❌ Görev doldu!"
+            
+            answer_callback_query(callback_id, error_msg, show_alert=True)
+    
     def show_available_tasks(self, user_id, language='tr'):
         """Mevcut görevleri göster"""
         texts = LANGUAGE_TEXTS.get(language, LANGUAGE_TEXTS['tr'])
@@ -1806,17 +1822,17 @@ Adres: {address}
         tasks = self.db.cursor.fetchall()
         
         if not tasks:
-            text = """
-🎯 *Görevler*
+            text = f"""
+🎯 *{texts['buttons']['do_task']}*
 
-Şu anda mevcut görev bulunmuyor.
+{texts['errors']['not_found']}
 
 Daha sonra tekrar kontrol edin veya reklamveren olup kendi görevlerinizi oluşturun!
             """
             send_message(user_id, text)
             return
         
-        text = "🎯 *Mevcut Görevler*\n\n"
+        text = f"🎯 *{texts['buttons']['do_task']}*\n\n"
         
         keyboard_buttons = []
         
@@ -1829,7 +1845,7 @@ Daha sonra tekrar kontrol edin veya reklamveren olup kendi görevlerinizi oluşt
             text += f"""
 🔸 *{task['title']}*
 📝 {task['description'][:50]}...
-💰 Ödül: {formatted_review}
+💰 Ödül: {formatted_reward}
 👥 {task['participants_current']}/{task['participants_needed']} kişi
             """
             
@@ -1964,7 +1980,8 @@ Lütfen görev başlığını girin:
         total_earned = self.db.cursor.fetchone()[0] or 0
         
         referral_code = user['referral_code']
-        referral_link = f"https://t.me/{(TOKEN.split(':')[0])}?start={referral_code}"
+        bot_username = TOKEN.split(':')[0] if ':' in TOKEN else 'TaskizBot'
+        referral_link = f"https://t.me/{bot_username}?start={referral_code}"
         
         text = f"""
 👥 *{texts['menu']['referrals']}*
@@ -2126,7 +2143,7 @@ class StatsNotifier:
 💸 Bugünkü Harcama: ${today_tasks_spent:.2f}
 🎁 Bugünkü Kazanç: ${today_earnings:.2f}
 
-🤖 @{(TOKEN.split(':')[0])}
+🤖 @{TOKEN.split(':')[0] if ':' in TOKEN else 'TaskizBot'}
 📢 @EarnTether2026
         """
         
@@ -2135,7 +2152,24 @@ class StatsNotifier:
 # Botu başlat
 bot = TaskizBot()
 
+@app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    """Telegram webhook'u ayarla"""
+    webhook_url = os.environ.get('WEBHOOK_URL', '') + '/webhook'
+    response = requests.get(f'{BASE_URL}setWebhook?url={webhook_url}')
+    return jsonify(response.json())
+
 # Flask server'ı başlat
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    
+    # Webhook'u ayarla (opsiyonel)
+    webhook_url = os.environ.get('WEBHOOK_URL')
+    if webhook_url:
+        webhook_url = webhook_url.rstrip('/') + '/webhook'
+        response = requests.get(f'{BASE_URL}setWebhook?url={webhook_url}')
+        print(f"📡 Webhook ayarlandı: {response.json()}")
+    else:
+        print("⚠️ WEBHOOK_URL ortam değişkeni ayarlanmadı, polling modunda çalıştırılacak")
+    
     app.run(host='0.0.0.0', port=port, debug=False)
