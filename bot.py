@@ -110,7 +110,7 @@ def get_chat_member(chat_id, user_id):
     except:
         return False
 
-# Database Sınıfı - Tam Gerçek
+# Database Sınıfı
 class Database:
     def __init__(self, db_path='taskizbot_real.db'):
         self.db_path = db_path
@@ -250,11 +250,9 @@ class Database:
         count = self.cursor.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
         if count == 0:
             sample_tasks = [
-                ('Telegram Kanalına Katıl', '@TaskizLive kanalımıza katılın ve ekran görüntüsü gönderin', 0.05, 1000, 'channel_join', 1),
-                ('Botumuzu Beğenin', 'Botu favorilere ekleyin ve yıldız verin', 0.03, 500, 'like', 1),
-                ('Gönderi Paylaşımı', 'Belirtilen gönderiyi paylaşın ve link gönderin', 0.08, 300, 'share', 1),
-                ('YouTube Video İzleme', 'Belirtilen videoyu 1 dakika izleyin', 0.02, 2000, 'watch', 1),
-                ('Referans Kazanç', '3 arkadaşınızı davet edin', 0.10, 1000, 'referral', 1),
+                ('Telegram Kanalına Katıl', '@TaskizLive kanalımıza katılın', 0.05, 1000, 'channel_join', 1),
+                ('Botu Beğenin', 'Botu favorilere ekleyin', 0.03, 500, 'like', 1),
+                ('Gönderi Paylaşımı', 'Belirtilen gönderiyi paylaşın', 0.08, 300, 'share', 1),
             ]
             for task in sample_tasks:
                 self.cursor.execute('''
@@ -542,9 +540,6 @@ class Database:
                 WHERE id = ?
             ''', (task_id,))
             
-            # Admin onayı bekleniyor - GERÇEK SİSTEM
-            # Ödül hemen verilmez, admin onayı gerekir
-            
             self.connection.commit()
             return task['reward']
         except Exception as e:
@@ -659,6 +654,7 @@ class Database:
 class TaskizBot:
     def __init__(self):
         self.db = Database()
+        self.user_states = {}  # EKSİK OLAN SATIR - EKLENDİ
         print(f"🤖 {BOT_NAME} başlatıldı!")
     
     def handle_update(self, update):
@@ -710,7 +706,6 @@ class TaskizBot:
 🎉 {first_name} {last_name or ''}
 🆔 `{user_id}`
 📅 {datetime.now().strftime('%H:%M')}
-👥 Toplam: {self.db.cursor.execute('SELECT COUNT(*) FROM users').fetchone()[0]}
             """
             try:
                 send_message(STATS_CHANNEL, group_msg)
@@ -739,6 +734,98 @@ class TaskizBot:
         # Normal komutlar
         self.process_command(user_id, text, user)
     
+    def handle_trx_address(self, user_id, text, user):
+        """TRX adresi alındığında"""
+        if user_id in self.user_states:
+            amount = self.user_states[user_id].get('withdraw_amount', 0)
+            
+            # Çekim kaydı
+            self.db.cursor.execute('''
+                INSERT INTO withdrawals (user_id, amount, trx_address, status)
+                VALUES (?, ?, ?, 'pending')
+            ''', (user_id, amount, text, 'pending'))
+            
+            # Bakiye düş
+            self.db.cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
+            self.db.connection.commit()
+            
+            # GRUP BİLDİRİMİ: ÇEKİM TALEBİ
+            group_msg = f"""
+🏧 *YENİ ÇEKİM TALEBİ*
+━━━━━━━━━━━━
+👤 {user['first_name']}
+💰 ${amount}
+🔗 TRX: `{text[:10]}...`
+⏰ {datetime.now().strftime('%H:%M')}
+            """
+            try:
+                send_message(STATS_CHANNEL, group_msg)
+            except:
+                pass
+            
+            send_message(user_id, f"✅ Çekim talebin alındı!\n💰 ${amount}\n⏳ 24-48 saat")
+            del self.user_states[user_id]
+            time.sleep(1)
+            self.show_main_menu(user_id, user['language'])
+    
+    def process_command(self, user_id, text, user):
+        """Normal komutları işle"""
+        lang = user['language']
+        
+        if text.startswith('/'):
+            cmd = text.split()[0]
+            if cmd == '/start':
+                self.show_main_menu(user_id, lang)
+            elif cmd == '/tasks':
+                self.show_tasks(user_id)
+            elif cmd == '/balance':
+                self.show_balance(user_id)
+            elif cmd == '/withdraw':
+                self.show_withdraw(user_id)
+            elif cmd == '/deposit':
+                self.show_deposit(user_id)
+            elif cmd == '/referral':
+                self.show_referral(user_id)
+            elif cmd == '/profile':
+                self.show_profile(user_id)
+            elif cmd == '/help':
+                self.show_help(user_id)
+            else:
+                self.show_main_menu(user_id, lang)
+        else:
+            # Basit buton işlemleri
+            if text in ["🎯 Görevler", "Tasks"]:
+                self.show_tasks(user_id)
+            elif text in ["💰 Bakiye", "Balance"]:
+                self.show_balance(user_id)
+            elif text in ["🏧 Çek", "Withdraw"]:
+                self.show_withdraw(user_id)
+            elif text in ["💳 Yükle", "Deposit"]:
+                self.show_deposit(user_id)
+            elif text in ["👥 Davet", "Referral"]:
+                self.show_referral(user_id)
+            elif text in ["👤 Profil", "Profile"]:
+                self.show_profile(user_id)
+            elif text in ["❓ Yardım", "Help"]:
+                self.show_help(user_id)
+            else:
+                self.show_main_menu(user_id, lang)
+    
+    def show_language_selection(self, user_id):
+        """Dil seçimi göster"""
+        text = "🌍 Dil / Language"
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🇹🇷 Türkçe', 'callback_data': 'lang_tr'}],
+                [{'text': '🇺🇸 English', 'callback_data': 'lang_en'}],
+                [{'text': '🇷🇺 Русский', 'callback_data': 'lang_ru'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+        
+        send_message(user_id, text, reply_markup=keyboard)
+    
     def handle_callback_query(self, callback_query):
         data = callback_query['data']
         user_id = callback_query['from']['id']
@@ -747,7 +834,7 @@ class TaskizBot:
         try:
             # Admin callback'leri
             if str(user_id) in ADMIN_IDS and data.startswith("admin_"):
-                self.handle_admin_callback(user_id, data, callback_id)
+                self.handle_admin_callback(user_id, data, callback_id, callback_query)
                 return
             
             # Normal kullanıcı callback'leri
@@ -837,10 +924,6 @@ class TaskizBot:
                     {'text': "📊 Detaylı İstatistik", 'callback_data': 'admin_detailed_stats'}
                 ],
                 [
-                    {'text': "🔍 Son İşlemler", 'callback_data': 'admin_recent_logs'},
-                    {'text': "📋 Tüm Kullanıcılar", 'callback_data': 'admin_all_users'}
-                ],
-                [
                     {'text': "🔄 Yenile", 'callback_data': 'admin_refresh'},
                     {'text': "❌ Kapat", 'callback_data': 'admin_close'}
                 ]
@@ -849,83 +932,29 @@ class TaskizBot:
         
         send_message(admin_id, text, reply_markup=keyboard)
     
-    def handle_admin_callback(self, admin_id, data, callback_id):
+    def handle_admin_callback(self, admin_id, data, callback_id, callback_query):
         """Admin callback'lerini işle"""
         if data == 'admin_refresh':
             self.show_admin_panel(admin_id)
             answer_callback_query(callback_id, "🔄 Yenilendi")
         
         elif data == 'admin_close':
-            delete_message(callback_query['message']['chat']['id'], callback_query['message']['message_id'])
+            try:
+                delete_message(callback_query['message']['chat']['id'], callback_query['message']['message_id'])
+            except:
+                pass
             answer_callback_query(callback_id, "❌ Panel kapatıldı")
         
         elif data == 'admin_search_user':
-            self.ask_admin_search_user(admin_id)
-            answer_callback_query(callback_id, "👤 ID veya kullanıcı adı girin")
+            send_message(admin_id, "👤 *Kullanıcı Ara*\n\nKullanıcı ID veya kullanıcı adı girin:")
+            answer_callback_query(callback_id, "👤 Kullanıcı ara")
         
         elif data == 'admin_add_balance':
-            self.ask_admin_add_balance(admin_id)
-            answer_callback_query(callback_id, "💰 Kullanıcı ID ve miktar girin")
+            send_message(admin_id, "💰 *Bakiye Ekle*\n\nFormat: `ID MİKTAR NEDEN`\n\nÖrnek: `123456789 10.50 Görev bonusu`")
+            answer_callback_query(callback_id, "💰 Bakiye ekle")
         
         elif data == 'admin_create_task':
-            self.ask_admin_create_task(admin_id)
-            answer_callback_query(callback_id, "🎯 Görev bilgilerini girin")
-        
-        elif data == 'admin_pending_tasks':
-            self.show_pending_task_completions(admin_id)
-            answer_callback_query(callback_id, "📋 Onay bekleyen görevler")
-        
-        elif data == 'admin_withdrawals':
-            self.show_pending_withdrawals(admin_id)
-            answer_callback_query(callback_id, "🏧 Bekleyen çekimler")
-        
-        elif data == 'admin_detailed_stats':
-            self.show_detailed_stats(admin_id)
-            answer_callback_query(callback_id, "📊 Detaylı istatistikler")
-        
-        elif data == 'admin_all_users':
-            self.show_all_users(admin_id)
-            answer_callback_query(callback_id, "📋 Tüm kullanıcılar")
-        
-        elif data == 'admin_recent_logs':
-            self.show_recent_logs(admin_id)
-            answer_callback_query(callback_id, "🔍 Son işlemler")
-        
-        elif data.startswith('admin_approve_task_'):
-            parts = data.split('_')
-            if len(parts) >= 4:
-                task_id = int(parts[3])
-                self.approve_task_completion_admin(admin_id, task_id, callback_id)
-        
-        elif data.startswith('admin_reject_task_'):
-            parts = data.split('_')
-            if len(parts) >= 4:
-                task_id = int(parts[3])
-                self.reject_task_completion_admin(admin_id, task_id, callback_id)
-        
-        elif data.startswith('admin_approve_withdrawal_'):
-            parts = data.split('_')
-            if len(parts) >= 4:
-                withdrawal_id = int(parts[3])
-                self.approve_withdrawal_admin(admin_id, withdrawal_id, callback_id)
-        
-        elif data.startswith('admin_reject_withdrawal_'):
-            parts = data.split('_')
-            if len(parts) >= 4:
-                withdrawal_id = int(parts[3])
-                self.reject_withdrawal_admin(admin_id, withdrawal_id, callback_id)
-    
-    def ask_admin_search_user(self, admin_id):
-        """Admin kullanıcı arama"""
-        send_message(admin_id, "👤 *Kullanıcı Ara*\n\nKullanıcı ID veya kullanıcı adı girin:\n\nÖrnek: `123456789` veya `@kullaniciadi`")
-    
-    def ask_admin_add_balance(self, admin_id):
-        """Admin bakiye ekleme"""
-        send_message(admin_id, "💰 *Bakiye Ekle*\n\nFormat: `ID MİKTAR NEDEN`\n\nÖrnek: `123456789 10.50 Görev bonusu`")
-    
-    def ask_admin_create_task(self, admin_id):
-        """Admin görev oluşturma"""
-        send_message(admin_id, """
+            send_message(admin_id, """
 🎯 *Görev Oluştur*
 
 Format:
