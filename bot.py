@@ -484,7 +484,7 @@ class Database:
         ''', (limit, offset))
         return [dict(row) for row in self.cursor.fetchall()]
     
-    # GENEL FONKSİYONLAR
+    # GENEL FONKSİYONLARI
     def update_last_active(self, user_id):
         self.cursor.execute('UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE user_id = ?', (user_id,))
         self.connection.commit()
@@ -813,14 +813,22 @@ class TaskizBot:
     
     def show_language_selection(self, user_id):
         """Dil seçimi göster"""
-        text = "🌍 Dil / Language"
+        text = """
+🌍 *DİL SEÇİMİ / LANGUAGE SELECTION*
+
+Lütfen kullanmak istediğiniz dili seçiniz. Bu seçim botun tüm mesajlarında kullanılacaktır.
+
+Please select your preferred language. This choice will be used for all bot messages.
+        """
         
         keyboard = {
             'inline_keyboard': [
-                [{'text': '🇹🇷 Türkçe', 'callback_data': 'lang_tr'}],
-                [{'text': '🇺🇸 English', 'callback_data': 'lang_en'}],
-                [{'text': '🇷🇺 Русский', 'callback_data': 'lang_ru'}],
-                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+                [{'text': '🇹🇷 Türkçe - Türk Dili', 'callback_data': 'lang_tr'}],
+                [{'text': '🇺🇸 English - English Language', 'callback_data': 'lang_en'}],
+                [{'text': '🇷🇺 Русский - Русский язык', 'callback_data': 'lang_ru'}],
+                [{'text': '🇪🇸 Español - Español', 'callback_data': 'lang_es'}],
+                [{'text': '🇵🇹 Português - Português', 'callback_data': 'lang_pt'}],
+                [{'text': '🏠 Ana Menüye Dön / Back to Main Menu', 'callback_data': 'main_menu'}]
             ]
         }
         
@@ -842,7 +850,7 @@ class TaskizBot:
                 lang = data.split('_')[1]
                 self.db.cursor.execute('UPDATE users SET language = ? WHERE user_id = ?', (lang, user_id))
                 self.db.connection.commit()
-                answer_callback_query(callback_id, "✅ Dil seçildi")
+                answer_callback_query(callback_id, "✅ Dil seçildi / Language selected")
                 self.show_main_menu(user_id, lang)
             
             elif data == 'main_menu':
@@ -874,7 +882,7 @@ class TaskizBot:
             
             elif data == 'refresh_tasks':
                 self.show_tasks(user_id)
-                answer_callback_query(callback_id, "🔄 Yenilendi")
+                answer_callback_query(callback_id, "🔄 Görevler yenilendi / Tasks refreshed")
             
             elif data == 'start_withdrawal':
                 self.start_withdrawal_process(user_id, callback_id)
@@ -882,79 +890,1199 @@ class TaskizBot:
             elif data == 'copy_ref':
                 user = self.db.get_user(user_id)
                 if user:
-                    answer_callback_query(callback_id, f"📋 Kod: {user['referral_code']}", True)
+                    answer_callback_query(callback_id, f"📋 Referans Kodunuz: {user['referral_code']}\nBu kodu kopyalayıp paylaşabilirsiniz.", True)
             
         except Exception as e:
             print(f"Callback error: {e}")
-            answer_callback_query(callback_id, "❌ Hata")
+            answer_callback_query(callback_id, "❌ Bir hata oluştu / An error occurred")
     
-    # ADMIN PANELİ FONKSİYONLARI
-    def show_admin_panel(self, admin_id):
-        """Admin panelini göster"""
-        stats = self.db.admin_get_stats()
+    # ANA MENÜ GÖSTERİMİ
+    def show_main_menu(self, user_id, lang='tr'):
+        """Ana menüyü göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
         
-        text = f"""
-⚡ *ADMIN PANEL - {BOT_NAME}*
+        welcome_texts = {
+            'tr': f"""
+🌟 *HOŞ GELDİN {user['first_name']}!* 🌟
 
-📊 *İSTATİSTİKLER*
-👥 Toplam Kullanıcı: `{stats['total_users']}`
-📈 Aktif (24s): `{stats['active_users']}`
-🆕 Yeni (24s): `{stats['new_users']}`
-💰 Toplam Bakiye: `${stats['total_balance']:.2f}`
-🏧 Bekleyen Çekim: `{stats['pending_withdrawals']}`
-💵 Bekleyen Tutar: `${stats['pending_amount']:.2f}`
-🎯 Aktif Görev: `{stats['active_tasks']}`
-💸 Toplam Çekilen: `${stats['total_withdrawn']:.2f}`
+🚀 **{BOT_NAME}** - Telegram'ın en kazançlı görev botu! 
+Kolay görevler tamamlayarak para kazanmaya hemen başla!
 
-🛠️ *ADMIN ARAÇLARI*
-        """
+📊 *Hızlı Bilgiler:*
+├ 💰 Bakiyen: `${user['balance']:.2f}`
+├ 🎯 Tamamlanan Görev: `{user['tasks_completed']}`
+├ 👥 Referansların: `{user['total_referrals']}`
+└ 📈 Toplam Kazanç: `${user['total_earned']:.2f}`
+
+💡 *Nasıl Çalışır?*
+1. 🎯 Görevler bölümünden bir görev seç
+2. 📋 Görevin talimatlarını uygula
+3. ✅ Tamamlandığını onayla
+4. 💰 Hemen ödülünü al!
+
+⚡ *Hızlı Başlangıç İçin:*
+- Her gün yeni görevler ekleniyor
+- Referanslarınla ekstra kazan
+- Düzenli bonuslar ve promosyonlar
+            """,
+            'en': f"""
+🌟 *WELCOME {user['first_name']}!* 🌟
+
+🚀 **{BOT_NAME}** - The most profitable task bot on Telegram!
+Start earning money right away by completing simple tasks!
+
+📊 *Quick Info:*
+├ 💰 Your Balance: `${user['balance']:.2f}`
+├ 🎯 Tasks Completed: `{user['tasks_completed']}`
+├ 👥 Your Referrals: `{user['total_referrals']}`
+└ 📈 Total Earned: `${user['total_earned']:.2f}`
+
+💡 *How It Works?*
+1. 🎯 Select a task from Tasks section
+2. 📋 Follow the task instructions
+3. ✅ Confirm completion
+4. 💰 Get your reward instantly!
+
+⚡ *For Quick Start:*
+- New tasks added daily
+- Earn extra with referrals
+- Regular bonuses and promotions
+            """,
+            'ru': f"""
+🌟 *ДОБРО ПОЖАЛОВАТЬ {user['first_name']}!* 🌟
+
+🚀 **{BOT_NAME}** - Самый прибыльный бот задач в Telegram!
+Начните зарабатывать деньги прямо сейчас, выполняя простые задачи!
+
+📊 *Быстрая информация:*
+├ 💰 Ваш баланс: `${user['balance']:.2f}`
+├ 🎯 Выполненные задачи: `{user['tasks_completed']}`
+├ 👥 Ваши рефералы: `{user['total_referrals']}`
+└ 📈 Всего заработано: `${user['total_earned']:.2f}`
+
+💡 *Как это работает?*
+1. 🎯 Выберите задачу из раздела Задачи
+2. 📋 Выполните инструкции задачи
+3. ✅ Подтвердите выполнение
+4. 💰 Получите вознаграждение мгновенно!
+
+⚡ *Для быстрого старта:*
+- Новые задачи добавляются ежедневно
+- Зарабатывайте дополнительно с рефералами
+- Регулярные бонусы и акции
+            """
+        }
+        
+        text = welcome_texts.get(lang, welcome_texts['tr'])
+        
+        keyboard = {
+            'keyboard': [
+                ["🎯 Görevler", "💰 Bakiye"],
+                ["🏧 Çek", "💳 Yükle"],
+                ["👥 Davet", "👤 Profil"],
+                ["❓ Yardım", "⚙️ Ayarlar"]
+            ],
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        } if lang == 'tr' else {
+            'keyboard': [
+                ["🎯 Tasks", "💰 Balance"],
+                ["🏧 Withdraw", "💳 Deposit"],
+                ["👥 Referral", "👤 Profile"],
+                ["❓ Help", "⚙️ Settings"]
+            ],
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        }
+        
+        send_message(user_id, text, reply_markup=keyboard)
+    
+    # GÖREVLER SAYFASI
+    def show_tasks(self, user_id):
+        """Görevleri göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        
+        tasks = self.db.get_active_tasks(user_id)
+        lang = user['language']
+        
+        if not tasks:
+            no_tasks_texts = {
+                'tr': """
+📭 *GÖREV BULUNAMADI*
+
+Şu anda mevcut görev bulunmuyor. 
+Lütfen daha sonra tekrar kontrol edin.
+
+⏰ *Yakında:*
+- Yeni görevler ekleniyor
+- Özel bonus görevleri
+- Limitli süreli promosyonlar
+
+💡 **Öneri:** Referanslarınızı davet ederek ekstra kazanmaya devam edebilirsiniz!
+                """,
+                'en': """
+📭 *NO TASKS AVAILABLE*
+
+There are currently no available tasks.
+Please check back later.
+
+⏰ *Coming Soon:*
+- New tasks being added
+- Special bonus tasks
+- Limited time promotions
+
+💡 **Tip:** You can continue earning extra by inviting your referrals!
+                """,
+                'ru': """
+📭 *ЗАДАЧИ НЕ НАЙДЕНЫ*
+
+В настоящее время нет доступных задач.
+Пожалуйста, проверьте позже.
+
+⏰ *Скоро:*
+- Добавляются новые задачи
+- Специальные бонусные задачи
+- Ограниченные по времени акции
+
+💡 **Совет:** Вы можете продолжать зарабатывать дополнительно, приглашая своих рефералов!
+                """
+            }
+            
+            text = no_tasks_texts.get(lang, no_tasks_texts['tr'])
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '🔄 Yenile', 'callback_data': 'refresh_tasks'}],
+                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+                ]
+            }
+            send_message(user_id, text, reply_markup=keyboard)
+            return
+        
+        text = {
+            'tr': f"""
+🎯 *MEVCUT GÖREVLER* ({len(tasks)})
+
+Aşağıdaki görevleri tamamlayarak ödül kazanabilirsiniz. Her görevin kendi talimatları ve ödül miktarı bulunmaktadır.
+
+📋 *Talimatlar:*
+1. Katılmak istediğiniz görevi seçin
+2. Görevin açıklamasını dikkatlice okuyun
+3. Talimatları eksiksiz uygulayın
+4. Tamamlandığında onay için bekleyin
+            """,
+            'en': f"""
+🎯 *AVAILABLE TASKS* ({len(tasks)})
+
+You can earn rewards by completing the tasks below. Each task has its own instructions and reward amount.
+
+📋 *Instructions:*
+1. Select the task you want to join
+2. Read the task description carefully
+3. Follow the instructions completely
+4. Wait for approval when completed
+            """,
+            'ru': f"""
+🎯 *ДОСТУПНЫЕ ЗАДАЧИ* ({len(tasks)})
+
+Вы можете зарабатывать награды, выполняя задачи ниже. Каждая задача имеет свои инструкции и сумму вознаграждения.
+
+📋 *Инструкции:*
+1. Выберите задачу, к которой хотите присоединиться
+2. Внимательно прочитайте описание задачи
+3. Полностью следуйте инструкциям
+4. Дождитесь подтверждения по завершении
+            """
+        }.get(lang)
+        
+        keyboard = {'inline_keyboard': []}
+        
+        for task in tasks[:10]:  # İlk 10 görevi göster
+            btn_text = f"{task['title']} - ${task['reward']:.2f} ({task['current_participants']}/{task['max_participants']})"
+            keyboard['inline_keyboard'].append([
+                {'text': btn_text, 'callback_data': f'join_task_{task["id"]}'}
+            ])
+        
+        keyboard['inline_keyboard'].extend([
+            [{'text': '🔄 Yenile / Refresh', 'callback_data': 'refresh_tasks'}],
+            [{'text': '🏠 Ana Menü / Main Menu', 'callback_data': 'main_menu'}]
+        ])
+        
+        send_message(user_id, text, reply_markup=keyboard)
+    
+    # BAKİYE SAYFASI
+    def show_balance(self, user_id):
+        """Bakiyeyi göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        
+        lang = user['language']
+        
+        balance_texts = {
+            'tr': f"""
+💰 *BAKİYE DURUMU*
+
+━━━━━━━━━━━━━━━━
+💵 **Mevcut Bakiye:** `${user['balance']:.2f}`
+━━━━━━━━━━━━━━━━
+
+📊 *Detaylı Bilgiler:*
+├ 🎯 Tamamlanan Görev: `{user['tasks_completed']}`
+├ 💰 Toplam Kazanç: `${user['total_earned']:.2f}`
+├ 👥 Aktif Referans: `{user['total_referrals']}`
+└ 📈 Referans Kazancı: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+
+🏧 *Çekim Koşulları:*
+- Minimum çekim: `${MIN_WITHDRAW}`
+- Minimum referans: `{MIN_REFERRALS_FOR_WITHDRAW}` aktif referans
+- Çekim süresi: 24-48 saat
+- Komisyon: %0 (Komisyonsuz!)
+
+💡 *Bakiye Artırma Yolları:*
+1. Görevleri tamamlayarak
+2. Referanslarını davet ederek
+3. Günlük bonuslardan yararlanarak
+4. Özel promosyonlara katılarak
+
+⚡ *Hızlı İşlemler:*
+            """,
+            'en': f"""
+💰 *BALANCE STATUS*
+
+━━━━━━━━━━━━━━━━
+💵 **Current Balance:** `${user['balance']:.2f}`
+━━━━━━━━━━━━━━━━
+
+📊 *Detailed Information:*
+├ 🎯 Tasks Completed: `{user['tasks_completed']}`
+├ 💰 Total Earned: `${user['total_earned']:.2f}`
+├ 👥 Active Referrals: `{user['total_referrals']}`
+└ 📈 Referral Earnings: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+
+🏧 *Withdrawal Conditions:*
+- Minimum withdrawal: `${MIN_WITHDRAW}`
+- Minimum referrals: `{MIN_REFERRALS_FOR_WITHDRAW}` active referrals
+- Withdrawal time: 24-48 hours
+- Commission: 0% (No commission!)
+
+💡 *Ways to Increase Balance:*
+1. By completing tasks
+2. By inviting your referrals
+3. By taking advantage of daily bonuses
+4. By participating in special promotions
+
+⚡ *Quick Actions:*
+            """,
+            'ru': f"""
+💰 *СТАТУС БАЛАНСА*
+
+━━━━━━━━━━━━━━━━
+💵 **Текущий баланс:** `${user['balance']:.2f}`
+━━━━━━━━━━━━━━━━
+
+📊 *Подробная информация:*
+├ 🎯 Выполненные задачи: `{user['tasks_completed']}`
+├ 💰 Всего заработано: `${user['total_earned']:.2f}`
+├ 👥 Активные рефералы: `{user['total_referrals']}`
+└ 📈 Заработок с рефералов: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+
+🏧 *Условия вывода:*
+- Минимальный вывод: `${MIN_WITHDRAW}`
+- Минимальные рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}` активных рефералов
+- Время вывода: 24-48 часов
+- Комиссия: 0% (Без комиссии!)
+
+💡 *Способы увеличения баланса:*
+1. Выполняя задачи
+2. Приглашая своих рефералов
+3. Используя ежедневные бонусы
+4. Участвуя в специальных акциях
+
+⚡ *Быстрые действия:*
+            """
+        }
+        
+        text = balance_texts.get(lang, balance_texts['tr'])
         
         keyboard = {
             'inline_keyboard': [
-                [
-                    {'text': "👤 Kullanıcı Ara", 'callback_data': 'admin_search_user'},
-                    {'text': "💰 Bakiye Ekle", 'callback_data': 'admin_add_balance'}
-                ],
-                [
-                    {'text': "🎯 Görev Oluştur", 'callback_data': 'admin_create_task'},
-                    {'text': "📋 Görev Onayları", 'callback_data': 'admin_pending_tasks'}
-                ],
-                [
-                    {'text': "🏧 Çekim Talepleri", 'callback_data': 'admin_withdrawals'},
-                    {'text': "📊 Detaylı İstatistik", 'callback_data': 'admin_detailed_stats'}
-                ],
-                [
-                    {'text': "🔄 Yenile", 'callback_data': 'admin_refresh'},
-                    {'text': "❌ Kapat", 'callback_data': 'admin_close'}
-                ]
+                [{'text': '🏧 Para Çek', 'callback_data': 'show_withdraw'}],
+                [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
+                [{'text': '🎯 Görevlere Git', 'callback_data': 'show_tasks'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
         }
         
-        send_message(admin_id, text, reply_markup=keyboard)
+        send_message(user_id, text, reply_markup=keyboard)
     
-    def handle_admin_callback(self, admin_id, data, callback_id, callback_query):
-        """Admin callback'lerini işle"""
-        if data == 'admin_refresh':
-            self.show_admin_panel(admin_id)
-            answer_callback_query(callback_id, "🔄 Yenilendi")
+    # PARA ÇEKME SAYFASI
+    def show_withdraw(self, user_id):
+        """Para çekme sayfasını göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
         
-        elif data == 'admin_close':
-            try:
-                delete_message(callback_query['message']['chat']['id'], callback_query['message']['message_id'])
-            except:
-                pass
-            answer_callback_query(callback_id, "❌ Panel kapatıldı")
+        lang = user['language']
         
-        elif data == 'admin_search_user':
-            send_message(admin_id, "👤 *Kullanıcı Ara*\n\nKullanıcı ID veya kullanıcı adı girin:")
-            answer_callback_query(callback_id, "👤 Kullanıcı ara")
+        # Minimum şartları kontrol et
+        can_withdraw = True
+        reasons = []
         
-        elif data == 'admin_add_balance':
-            send_message(admin_id, "💰 *Bakiye Ekle*\n\nFormat: `ID MİKTAR NEDEN`\n\nÖrnek: `123456789 10.50 Görev bonusu`")
-            answer_callback_query(callback_id, "💰 Bakiye ekle")
+        if user['balance'] < MIN_WITHDRAW:
+            can_withdraw = False
+            reasons.append(f"Minimum çekim: ${MIN_WITHDRAW}")
         
-        elif data == 'admin_create_task':
-            send_message(admin_id, """
-🎯 *Görev Oluştur*
+        if user['total_referrals'] < MIN_REFERRALS_FOR_WITHDRAW:
+            can_withdraw = False
+            reasons.append(f"Minimum referans: {MIN_REFERRALS_FOR_WITHDRAW}")
+        
+        if can_withdraw:
+            withdraw_texts = {
+                'tr': f"""
+🏧 *PARA ÇEKME*
 
-Format:
+━━━━━━━━━━━━━━━━
+💰 **Kullanılabilir Bakiye:** `${user['balance']:.2f}`
+━━━━━━━━━━━━━━━━
+
+📋 *Çekim Bilgileri:*
+├ 💰 Minimum Tutar: `${MIN_WITHDRAW}`
+├ 👥 Gerekli Referans: `{MIN_REFERRALS_FOR_WITHDRAW}`
+├ ⏰ İşlem Süresi: 24-48 saat
+├ 📝 Komisyon: %0
+└ 🔗 Desteklenen Ağ: Tron (TRX)
+
+💡 *Talimatlar:*
+1. Tron (TRX) cüzdan adresinizi hazırlayın
+2. Çekmek istediğiniz tutarı girin
+3. Cüzdan adresinizi doğru şekilde yazın
+4. Talebinizi onaylayın
+
+⚠️ *Önemli Uyarılar:*
+- Sadece TRON (TRX) ağı desteklenmektedir
+- Yanlış adres gönderimlerinden sorumlu değiliz
+- Her çekim talebi manuel olarak kontrol edilir
+                """,
+                'en': f"""
+🏧 *WITHDRAWAL*
+
+━━━━━━━━━━━━━━━━
+💰 **Available Balance:** `${user['balance']:.2f}`
+━━━━━━━━━━━━━━━━
+
+📋 *Withdrawal Information:*
+├ 💰 Minimum Amount: `${MIN_WITHDRAW}`
+├ 👥 Required Referrals: `{MIN_REFERRALS_FOR_WITHDRAW}`
+├ ⏰ Processing Time: 24-48 hours
+├ 📝 Commission: 0%
+└ 🔗 Supported Network: Tron (TRX)
+
+💡 *Instructions:*
+1. Prepare your Tron (TRX) wallet address
+2. Enter the amount you want to withdraw
+3. Write your wallet address correctly
+4. Confirm your request
+
+⚠️ *Important Warnings:*
+- Only TRON (TRX) network is supported
+- We are not responsible for wrong address transfers
+- Each withdrawal request is manually checked
+                """,
+                'ru': f"""
+🏧 *ВЫВОД СРЕДСТВ*
+
+━━━━━━━━━━━━━━━━
+💰 **Доступный баланс:** `${user['balance']:.2f}`
+━━━━━━━━━━━━━━━━
+
+📋 *Информация о выводе:*
+├ 💰 Минимальная сумма: `${MIN_WITHDRAW}`
+├ 👥 Требуемые рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}`
+├ ⏰ Время обработки: 24-48 часов
+├ 📝 Комиссия: 0%
+└ 🔗 Поддерживаемая сеть: Tron (TRX)
+
+💡 *Инструкции:*
+1. Подготовьте адрес вашего кошелька Tron (TRX)
+2. Введите сумму, которую хотите вывести
+3. Правильно напишите адрес вашего кошелька
+4. Подтвердите ваш запрос
+
+⚠️ *Важные предупреждения:*
+- Поддерживается только сеть TRON (TRX)
+- Мы не несем ответственности за переводы на неправильный адрес
+- Каждый запрос на вывод проверяется вручную
+                """
+            }
+            
+            text = withdraw_texts.get(lang, withdraw_texts['tr'])
+            
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': f'💰 Çekim Yap (${user["balance"]:.2f})', 'callback_data': 'start_withdrawal'}],
+                    [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+                ]
+            }
+        else:
+            # Çekim yapamıyor
+            reasons_text = "\n".join([f"• {reason}" for reason in reasons])
+            
+            cannot_withdraw_texts = {
+                'tr': f"""
+⛔ *ÇEKİM YAPAMAZSINIZ*
+
+━━━━━━━━━━━━━━━━
+💵 Mevcut Bakiye: `${user['balance']:.2f}`
+👥 Referans Sayınız: `{user['total_referrals']}`
+━━━━━━━━━━━━━━━━
+
+❌ *Eksik Koşullar:*
+{reasons_text}
+
+📈 *Hedefleriniz:*
+├ 💰 Minimum Bakiye: `${MIN_WITHDRAW}`
+└ 👥 Minimum Referans: `{MIN_REFERRALS_FOR_WITHDRAW}`
+
+💡 *Öneriler:*
+1. Daha fazla görev tamamlayarak bakiye artır
+2. Arkadaşlarını davet et, her davet sana ${REF_WELCOME_BONUS} kazandırır
+3. Günlük bonusları takip et
+4. Özel promosyonlardan yararlan
+                """,
+                'en': f"""
+⛔ *CANNOT WITHDRAW*
+
+━━━━━━━━━━━━━━━━
+💵 Current Balance: `${user['balance']:.2f}`
+👥 Your Referrals: `{user['total_referrals']}`
+━━━━━━━━━━━━━━━━
+
+❌ *Missing Conditions:*
+{reasons_text}
+
+📈 *Your Targets:*
+├ 💰 Minimum Balance: `${MIN_WITHDRAW}`
+└ 👥 Minimum Referrals: `{MIN_REFERRALS_FOR_WITHDRAW}`
+
+💡 *Suggestions:*
+1. Increase balance by completing more tasks
+2. Invite friends, each invite earns you ${REF_WELCOME_BONUS}
+3. Follow daily bonuses
+4. Take advantage of special promotions
+                """,
+                'ru': f"""
+⛔ *НЕ МОЖЕТЕ ВЫВЕСТИ*
+
+━━━━━━━━━━━━━━━━
+💵 Текущий баланс: `${user['balance']:.2f}`
+👥 Ваши рефералы: `{user['total_referrals']}`
+━━━━━━━━━━━━━━━━
+
+❌ *Отсутствующие условия:*
+{reasons_text}
+
+📈 *Ваши цели:*
+├ 💰 Минимальный баланс: `${MIN_WITHDRAW}`
+└ 👥 Минимальные рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}`
+
+💡 *Предложения:*
+1. Увеличьте баланс, выполняя больше задач
+2. Приглашайте друзей, каждое приглашение приносит вам ${REF_WELCOME_BONUS}
+3. Следите за ежедневными бонусами
+4. Воспользуйтесь специальными акциями
+                """
+            }
+            
+            text = cannot_withdraw_texts.get(lang, cannot_withdraw_texts['tr'])
+            
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '🎯 Görevlere Git', 'callback_data': 'show_tasks'}],
+                    [{'text': '👥 Referans Sistemine Git', 'callback_data': 'show_referral'}],
+                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+                ]
+            }
+        
+        send_message(user_id, text, reply_markup=keyboard)
+    
+    # REFERANS SAYFASI
+    def show_referral(self, user_id):
+        """Referans sistemini göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        
+        lang = user['language']
+        
+        # Referans istatistiklerini getir
+        self.db.cursor.execute('''
+            SELECT COUNT(*) as active_refs, 
+                   SUM(earned_amount) as total_earned 
+            FROM referrals 
+            WHERE referrer_id = ? AND status = 'active'
+        ''', (user_id,))
+        stats = self.db.cursor.fetchone()
+        
+        active_refs = stats['active_refs'] if stats else 0
+        ref_earned = stats['total_earned'] if stats and stats['total_earned'] else 0
+        
+        referral_link = f"https://t.me/{BOT_USERNAME}?start={user['referral_code']}"
+        
+        referral_texts = {
+            'tr': f"""
+👥 *REFERANS SİSTEMİ*
+
+━━━━━━━━━━━━━━━━
+💰 **Referans Kazancınız:** `${ref_earned:.2f}`
+👥 **Aktif Referanslarınız:** `{active_refs}`
+━━━━━━━━━━━━━━━━
+
+🎯 *Referans Programı Detayları:*
+
+1. **Hoş Geldin Bonusu:**
+   • Her yeni referans: `${REF_WELCOME_BONUS}`
+   • Anında ödeme
+
+2. **Görev Komisyonu:**
+   • Referanslarının her görev kazancından: `%{REF_TASK_COMMISSION * 100}`
+   • Otomatik ödeme
+
+3. **Minimum Çekim:**
+   • Çekim için en az `{MIN_REFERRALS_FOR_WITHDRAW}` aktif referans gereklidir
+
+📊 *Referans İstatistikleriniz:*
+├ 👥 Toplam Referans: `{user['total_referrals']}`
+├ 💰 Referans Kazancı: `${ref_earned:.2f}`
+└ 🎯 Hedef: `{MIN_REFERRALS_FOR_WITHDRAW}` referans
+
+🔗 *Referans Linkiniz:*
+`{referral_link}`
+
+📋 *Referans Kodunuz:*
+`{user['referral_code']}`
+
+💡 *Nasıl Daha Fazla Kazanırsınız?*
+1. Linkinizi sosyal medyada paylaşın
+2. Arkadaşlarınıza özel mesaj atın
+3. Gruplarda paylaşım yapın
+4. Kanalınız varsa açıklamaya ekleyin
+
+⚡ *Hızlı Paylaşım Butonları:*
+            """,
+            'en': f"""
+👥 *REFERRAL SYSTEM*
+
+━━━━━━━━━━━━━━━━
+💰 **Your Referral Earnings:** `${ref_earned:.2f}`
+👥 **Your Active Referrals:** `{active_refs}`
+━━━━━━━━━━━━━━━━
+
+🎯 *Referral Program Details:*
+
+1. **Welcome Bonus:**
+   • Each new referral: `${REF_WELCOME_BONUS}`
+   • Instant payment
+
+2. **Task Commission:**
+   • From each task earning of your referrals: `%{REF_TASK_COMMISSION * 100}`
+   • Automatic payment
+
+3. **Minimum Withdrawal:**
+   • At least `{MIN_REFERRALS_FOR_WITHDRAW}` active referrals required for withdrawal
+
+📊 *Your Referral Statistics:*
+├ 👥 Total Referrals: `{user['total_referrals']}`
+├ 💰 Referral Earnings: `${ref_earned:.2f}`
+└ 🎯 Target: `{MIN_REFERRALS_FOR_WITHDRAW}` referrals
+
+🔗 *Your Referral Link:*
+`{referral_link}`
+
+📋 *Your Referral Code:*
+`{user['referral_code']}`
+
+💡 *How to Earn More?*
+1. Share your link on social media
+2. Send private messages to friends
+3. Make shares in groups
+4. Add to your channel description if you have one
+
+⚡ *Quick Share Buttons:*
+            """,
+            'ru': f"""
+👥 *РЕФЕРАЛЬНАЯ СИСТЕМА*
+
+━━━━━━━━━━━━━━━━
+💰 **Ваш реферальный заработок:** `${ref_earned:.2f}`
+👥 **Ваши активные рефералы:** `{active_refs}`
+━━━━━━━━━━━━━━━━
+
+🎯 *Детали реферальной программы:*
+
+1. **Бонус за регистрацию:**
+   • Каждый новый реферал: `${REF_WELCOME_BONUS}`
+   • Мгновенная оплата
+
+2. **Комиссия за задачи:**
+   • От каждого заработка с задач ваших рефералов: `%{REF_TASK_COMMISSION * 100}`
+   • Автоматическая оплата
+
+3. **Минимальный вывод:**
+   • Для вывода требуется не менее `{MIN_REFERRALS_FOR_WITHDRAW}` активных рефералов
+
+📊 *Ваша реферальная статистика:*
+├ 👥 Всего рефералов: `{user['total_referrals']}`
+├ 💰 Реферальный заработок: `${ref_earned:.2f}`
+└ 🎯 Цель: `{MIN_REFERRALS_FOR_WITHDRAW}` рефералов
+
+🔗 *Ваша реферальная ссылка:*
+`{referral_link}`
+
+📋 *Ваш реферальный код:*
+`{user['referral_code']}`
+
+💡 *Как заработать больше?*
+1. Поделитесь своей ссылкой в социальных сетях
+2. Отправьте личные сообщения друзьям
+3. Делайте публикации в группах
+4. Добавьте в описание вашего канала, если он есть
+
+⚡ *Кнопки быстрого обмена:*
+            """
+        }
+        
+        text = referral_texts.get(lang, referral_texts['tr'])
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📋 Referans Kodunu Kopyala', 'callback_data': 'copy_ref'}],
+                [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '🎯 Görevler', 'callback_data': 'show_tasks'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+        
+        send_message(user_id, text, reply_markup=keyboard)
+    
+    # PROFİL SAYFASI
+    def show_profile(self, user_id):
+        """Kullanıcı profilini göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        
+        lang = user['language']
+        
+        # Referans kazancını hesapla
+        self.db.cursor.execute('SELECT SUM(earned_amount) FROM referrals WHERE referrer_id = ?', (user_id,))
+        ref_earned = self.db.cursor.fetchone()[0] or 0
+        
+        # Son aktiviteyi formatla
+        last_active = datetime.strptime(user['last_active'], '%Y-%m-%d %H:%M:%S') if isinstance(user['last_active'], str) else user['last_active']
+        days_active = (datetime.now() - last_active).days
+        
+        profile_texts = {
+            'tr': f"""
+👤 *PROFİL BİLGİLERİ*
+
+━━━━━━━━━━━━━━━━
+🆔 **Kullanıcı ID:** `{user['user_id']}`
+👤 **Ad Soyad:** {user['first_name']} {user['last_name'] or ''}
+🌍 **Dil:** {SUPPORTED_LANGUAGES[lang]['flag']} {SUPPORTED_LANGUAGES[lang]['name']}
+━━━━━━━━━━━━━━━━
+
+📊 *İstatistikleriniz:*
+├ 💰 Mevcut Bakiye: `${user['balance']:.2f}`
+├ 📈 Toplam Kazanç: `${user['total_earned']:.2f}`
+├ 🎯 Tamamlanan Görev: `{user['tasks_completed']}`
+├ 👥 Aktif Referans: `{user['total_referrals']}`
+├ 💸 Referans Kazancı: `${ref_earned:.2f}`
+└ 📅 Son Aktivite: `{days_active}` gün önce
+
+🎯 *Hedefleriniz:*
+├ 💰 Minimum Çekim: `${MIN_WITHDRAW}`
+├ 👥 Minimum Referans: `{MIN_REFERRALS_FOR_WITHDRAW}`
+└ 🏆 Kalan Referans: `{max(0, MIN_REFERRALS_FOR_WITHDRAW - user['total_referrals'])}`
+
+⭐ *Başarı Durumu:*
+{self.get_achievement_status(user, lang)}
+
+💡 *Profilinizi Geliştirin:*
+1. Daha fazla görev tamamlayın
+2. Referanslarınızı artırın
+3. Günlük bonusları takip edin
+4. Özel etkinliklere katılın
+            """,
+            'en': f"""
+👤 *PROFILE INFORMATION*
+
+━━━━━━━━━━━━━━━━
+🆔 **User ID:** `{user['user_id']}`
+👤 **Full Name:** {user['first_name']} {user['last_name'] or ''}
+🌍 **Language:** {SUPPORTED_LANGUAGES[lang]['flag']} {SUPPORTED_LANGUAGES[lang]['name']}
+━━━━━━━━━━━━━━━━
+
+📊 *Your Statistics:*
+├ 💰 Current Balance: `${user['balance']:.2f}`
+├ 📈 Total Earnings: `${user['total_earned']:.2f}`
+├ 🎯 Tasks Completed: `{user['tasks_completed']}`
+├ 👥 Active Referrals: `{user['total_referrals']}`
+├ 💸 Referral Earnings: `${ref_earned:.2f}`
+└ 📅 Last Active: `{days_active}` days ago
+
+🎯 *Your Targets:*
+├ 💰 Minimum Withdrawal: `${MIN_WITHDRAW}`
+├ 👥 Minimum Referrals: `{MIN_REFERRALS_FOR_WITHDRAW}`
+└ 🏆 Remaining Referrals: `{max(0, MIN_REFERRALS_FOR_WITHDRAW - user['total_referrals'])}`
+
+⭐ *Achievement Status:*
+{self.get_achievement_status(user, lang)}
+
+💡 *Improve Your Profile:*
+1. Complete more tasks
+2. Increase your referrals
+3. Follow daily bonuses
+4. Participate in special events
+            """,
+            'ru': f"""
+👤 *ИНФОРМАЦИЯ О ПРОФИЛЕ*
+
+━━━━━━━━━━━━━━━━
+🆔 **ID пользователя:** `{user['user_id']}`
+👤 **Полное имя:** {user['first_name']} {user['last_name'] or ''}
+🌍 **Язык:** {SUPPORTED_LANGUAGES[lang]['flag']} {SUPPORTED_LANGUAGES[lang]['name']}
+━━━━━━━━━━━━━━━━
+
+📊 *Ваша статистика:*
+├ 💰 Текущий баланс: `${user['balance']:.2f}`
+├ 📈 Всего заработано: `${user['total_earned']:.2f}`
+├ 🎯 Выполненные задачи: `{user['tasks_completed']}`
+├ 👥 Активные рефералы: `{user['total_referrals']}`
+├ 💸 Реферальный заработок: `${ref_earned:.2f}`
+└ 📅 Последняя активность: `{days_active}` дней назад
+
+🎯 *Ваши цели:*
+├ 💰 Минимальный вывод: `${MIN_WITHDRAW}`
+├ 👥 Минимальные рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}`
+└ 🏆 Оставшиеся рефералы: `{max(0, MIN_REFERRALS_FOR_WITHDRAW - user['total_referrals'])}`
+
+⭐ *Статус достижений:*
+{self.get_achievement_status(user, lang)}
+
+💡 *Улучшите свой профиль:*
+1. Выполняйте больше задач
+2. Увеличивайте количество рефералов
+3. Следите за ежедневными бонусами
+4. Участвуйте в специальных мероприятиях
+            """
+        }
+        
+        text = profile_texts.get(lang, profile_texts['tr'])
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '👥 Referanslar', 'callback_data': 'show_referral'}],
+                [{'text': '🎯 Görevler', 'callback_data': 'show_tasks'}],
+                [{'text': '⚙️ Dil Değiştir', 'callback_data': 'change_language'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+        
+        send_message(user_id, text, reply_markup=keyboard)
+    
+    def get_achievement_status(self, user, lang):
+        """Başarı durumunu döndür"""
+        achievements = []
+        
+        if user['tasks_completed'] >= 10:
+            achievements.append("✅ 10+ Görev Tamamlandı")
+        elif user['tasks_completed'] >= 5:
+            achievements.append("🟡 5 Görev Tamamlandı")
+        else:
+            achievements.append("🔴 Görev Başlatılmadı")
+        
+        if user['total_referrals'] >= MIN_REFERRALS_FOR_WITHDRAW:
+            achievements.append(f"✅ {MIN_REFERRALS_FOR_WITHDRAW}+ Referans")
+        else:
+            achievements.append(f"🔴 {user['total_referrals']}/{MIN_REFERRALS_FOR_WITHDRAW} Referans")
+        
+        if user['balance'] >= MIN_WITHDRAW:
+            achievements.append(f"✅ ${MIN_WITHDRAW}+ Bakiye")
+        else:
+            achievements.append(f"🔴 ${user['balance']:.2f}/{MIN_WITHDRAW} Bakiye")
+        
+        if lang == 'tr':
+            return "\n".join([f"• {ach}" for ach in achievements])
+        elif lang == 'en':
+            return "\n".join([f"• {ach}" for ach in achievements])
+        else:
+            return "\n".join([f"• {ach}" for ach in achievements])
+    
+    # YARDIM SAYFASI
+    def show_help(self, user_id):
+        """Yardım sayfasını göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        
+        lang = user['language']
+        
+        help_texts = {
+            'tr': f"""
+❓ *YARDIM VE DESTEK*
+
+━━━━━━━━━━━━━━━━
+🤖 **Bot:** {BOT_NAME}
+👤 **Destek:** {SUPPORT_USERNAME}
+🌍 **Resmi Kanal:** @TaskizLive
+━━━━━━━━━━━━━━━━
+
+📚 *Sıkça Sorulan Sorular:*
+
+1. **Nasıl para kazanırım?**
+   • Görevler bölümünden görev seçin
+   • Talimatları uygulayın
+   • Tamamlandığında onay için bekleyin
+   • Ödülünüz otomatik olarak bakiyenize eklenecek
+
+2. **Para çekme şartları nelerdir?**
+   • Minimum bakiye: `${MIN_WITHDRAW}`
+   • Minimum referans: `{MIN_REFERRALS_FOR_WITHDRAW}` aktif referans
+   • İşlem süresi: 24-48 saat
+   • Desteklenen ağ: Tron (TRX)
+
+3. **Referans sisteminden nasıl kazanırım?**
+   • Her yeni referans: `${REF_WELCOME_BONUS}` bonus
+   • Referanslarınızın her görev kazancından: `%{REF_TASK_COMMISSION * 100}` komisyon
+   • Ödemeler otomatik ve anlıktır
+
+4. **Görev onay süresi ne kadar?**
+   • Normal görevler: 1-12 saat
+   • Özel görevler: 24 saate kadar
+   • Her görev manuel olarak kontrol edilir
+
+5. **Bakiye neden artmıyor?**
+   • Görev tamamlamaları onay bekliyor olabilir
+   • Sistemde teknik bir sorun olabilir
+   • Lütfen destek ekibiyle iletişime geçin
+
+🔧 *Teknik Sorunlar:*
+• Bot cevap vermiyorsa: /start yazın
+• Görevler görünmüyorsa: /tasks yazın
+• Bakiye güncellenmiyorsa: /balance yazın
+
+📞 *İletişim:*
+• Destek: {SUPPORT_USERNAME}
+• Resmi Kanal: @TaskizLive
+• Güncellemeler: @TaskizLive
+
+⚠️ *Önemli Uyarılar:*
+• Asla şifrenizi veya özel bilgilerinizi paylaşmayın
+• Sadece resmi kanallardan gelen mesajlara güvenin
+• Şüpheli linklere tıklamayın
+            """,
+            'en': f"""
+❓ *HELP AND SUPPORT*
+
+━━━━━━━━━━━━━━━━
+🤖 **Bot:** {BOT_NAME}
+👤 **Support:** {SUPPORT_USERNAME}
+🌍 **Official Channel:** @TaskizLive
+━━━━━━━━━━━━━━━━
+
+📚 *Frequently Asked Questions:*
+
+1. **How do I earn money?**
+   • Select tasks from Tasks section
+   • Follow the instructions
+   • Wait for approval when completed
+   • Your reward will be automatically added to your balance
+
+2. **What are the withdrawal conditions?**
+   • Minimum balance: `${MIN_WITHDRAW}`
+   • Minimum referrals: `{MIN_REFERRALS_FOR_WITHDRAW}` active referrals
+   • Processing time: 24-48 hours
+   • Supported network: Tron (TRX)
+
+3. **How do I earn from referral system?**
+   • Each new referral: `${REF_WELCOME_BONUS}` bonus
+   • From each task earning of your referrals: `%{REF_TASK_COMMISSION * 100}` commission
+   • Payments are automatic and instant
+
+4. **How long does task approval take?**
+   • Normal tasks: 1-12 hours
+   • Special tasks: up to 24 hours
+   • Each task is manually checked
+
+5. **Why isn't my balance increasing?**
+   • Task completions may be pending approval
+   • There may be a technical issue in the system
+   • Please contact the support team
+
+🔧 *Technical Issues:*
+• If bot doesn't respond: type /start
+• If tasks aren't showing: type /tasks
+• If balance isn't updating: type /balance
+
+📞 *Contact:*
+• Support: {SUPPORT_USERNAME}
+• Official Channel: @TaskizLive
+• Updates: @TaskizLive
+
+⚠️ *Important Warnings:*
+• Never share your password or private information
+• Trust only messages from official channels
+• Don't click suspicious links
+            """,
+            'ru': f"""
+❓ *ПОМОЩЬ И ПОДДЕРЖКА*
+
+━━━━━━━━━━━━━━━━
+🤖 **Бот:** {BOT_NAME}
+👤 **Поддержка:** {SUPPORT_USERNAME}
+🌍 **Официальный канал:** @TaskizLive
+━━━━━━━━━━━━━━━━
+
+📚 *Часто задаваемые вопросы:*
+
+1. **Как я могу зарабатывать деньги?**
+   • Выбирайте задачи из раздела Задачи
+   • Следуйте инструкциям
+   • Дождитесь подтверждения по завершении
+   • Ваша награда будет автоматически добавлена на ваш баланс
+
+2. **Каковы условия вывода?**
+   • Минимальный баланс: `${MIN_WITHDRAW}`
+   • Минимальные рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}` активных рефералов
+   • Время обработки: 24-48 часов
+   • Поддерживаемая сеть: Tron (TRX)
+
+3. **Как зарабатывать с реферальной системы?**
+   • Каждый новый реферал: `${REF_WELCOME_BONUS}` бонус
+   • От каждого заработка с задач ваших рефералов: `%{REF_TASK_COMMISSION * 100}` комиссия
+   • Выплаты автоматические и мгновенные
+
+4. **Сколько времени занимает подтверждение задачи?**
+   • Обычные задачи: 1-12 часов
+   • Специальные задачи: до 24 часов
+   • Каждая задача проверяется вручную
+
+5. **Почему не увеличивается мой баланс?**
+   • Завершения задач могут ожидать подтверждения
+   • Возможна техническая проблема в системе
+   • Пожалуйста, свяжитесь со службой поддержки
+
+🔧 *Технические проблемы:*
+• Если бот не отвечает: напишите /start
+• Если задачи не отображаются: напишите /tasks
+• Если баланс не обновляется: напишите /balance
+
+📞 *Контакты:*
+• Поддержка: {SUPPORT_USERNAME}
+• Официальный канал: @TaskizLive
+• Обновления: @TaskizLive
+
+⚠️ *Важные предупреждения:*
+• Никогда не делитесь паролем или личной информацией
+• Доверяйте только сообщениям из официальных каналов
+• Не нажимайте на подозрительные ссылки
+            """
+        }
+        
+        text = help_texts.get(lang, help_texts['tr'])
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📞 Destekle İletişim', 'url': f'tg://resolve?domain={SUPPORT_USERNAME[1:]}'}],
+                [{'text': '📢 Resmi Kanal', 'url': 'https://t.me/TaskizLive'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+        
+        send_message(user_id, text, reply_markup=keyboard)
+    
+    # ADMIN FONKSİYONLARI DEVAMI...
+    def handle_admin_add_balance(self, admin_id, text):
+        """Admin bakiye ekleme"""
+        try:
+            parts = text.split()
+            if len(parts) < 3:
+                send_message(admin_id, "❌ Format: /addbalance USER_ID AMOUNT [REASON]")
+                return
+            
+            user_id = int(parts[1])
+            amount = float(parts[2])
+            reason = " ".join(parts[3:]) if len(parts) > 3 else ""
+            
+            if amount <= 0:
+                send_message(admin_id, "❌ Miktar pozitif olmalıdır")
+                return
+            
+            user = self.db.get_user(user_id)
+            if not user:
+                send_message(admin_id, "❌ Kullanıcı bulunamadı")
+                return
+            
+            if self.db.admin_add_balance(user_id, amount, admin_id, reason):
+                send_message(admin_id, f"✅ Bakiye eklendi!\n👤 Kullanıcı: {user_id}\n💰 Miktar: ${amount}\n📝 Nedeni: {reason}")
+                
+                # Kullanıcıya bildirim
+                send_message(user_id, f"🎉 Bakiyenize ${amount} eklendi!\n📝 Nedeni: {reason or 'Admin bonusu'}")
+            else:
+                send_message(admin_id, "❌ Bakiye eklenemedi")
+        except Exception as e:
+            send_message(admin_id, f"❌ Hata: {e}")
+    
+    def handle_admin_create_task(self, admin_id, text):
+        """Admin görev oluşturma"""
+        try:
+            parts = text.split(maxsplit=5)
+            if len(parts) < 5:
+                send_message(admin_id, "❌ Format: /createtask TITLE REWARD MAX_PARTICIPANTS TYPE DESCRIPTION")
+                return
+            
+            title = parts[1]
+            reward = float(parts[2])
+            max_parts = int(parts[3])
+            task_type = parts[4]
+            description = parts[5] if len(parts) > 5 else ""
+            
+            task_id = self.db.admin_create_task(title, description, reward, max_parts, task_type, admin_id)
+            
+            if task_id:
+                send_message(admin_id, f"""
+✅ Görev oluşturuldu!
+
+🎯 **Başlık:** {title}
+💰 **Ödül:** ${reward}
+👥 **Katılımcı:** {max_parts}
+📝 **Tip:** {task_type}
+🆔 **ID:** {task_id}
+                """)
+            else:
+                send_message(admin_id, "❌ Görev oluşturulamadı")
+        except Exception as e:
+            send_message(admin_id, f"❌ Hata: {e}")
+    
+    def start_withdrawal_process(self, user_id, callback_id):
+        """Para çekme sürecini başlat"""
+        user = self.db.get_user(user_id)
+        if not user:
+            answer_callback_query(callback_id, "❌ Kullanıcı bulunamadı")
+            return
+        
+        if user['balance'] < MIN_WITHDRAW:
+            answer_callback_query(callback_id, f"❌ Minimum çekim: ${MIN_WITHDRAW}", True)
+            return
+        
+        if user['total_referrals'] < MIN_REFERRALS_FOR_WITHDRAW:
+            answer_callback_query(callback_id, f"❌ Minimum referans: {MIN_REFERRALS_FOR_WITHDRAW}", True)
+            return
+        
+        # Kullanıcı durumunu güncelle
+        self.user_states[user_id] = {
+            'action': 'waiting_trx',
+            'withdraw_amount': user['balance']
+        }
+        
+        answer_callback_query(callback_id, "💰 Çekim başlatıldı")
+        
+        # TRX adresi iste
+        send_message(user_id, f"""
+🏧 *ÇEKİM TALEBİ*
+
+━━━━━━━━━━━━━━━━
+💰 **Çekilecek Tutar:** `${user['balance']:.2f}`
+━━━━━━━━━━━━━━━━
+
+🔗 Lütfen TRON (TRX) cüzdan adresinizi gönderin:
+
+⚠️ **ÖNEMLİ:**
+- Sadece TRON ağı desteklenmektedir
+- Yanlış adres gönderimlerinden sorumlu değiliz
+- Adresi doğru kopyaladığınızdan emin olun
+
+✍️ **Format:** `T...` şeklinde TRX adresiniz
+        """)
+    
+    def join_task(self, user_id, task_id, callback_id):
+        """Göreve katıl"""
+        user = self.db.get_user(user_id)
+        if not user:
+            answer_callback_query(callback_id, "❌ Kullanıcı bulunamadı")
+            return
+        
+        # Kanallara üyelik kontrolü
+        for channel in MANDATORY_CHANNELS:
+            if not get_chat_member(f"@{channel['username']}", user_id):
+                answer_callback_query(callback_id, f"❌ Önce @{channel['username']} kanalına katılmalısın", True)
+                return
+        
+        # Görevi tamamla
+        reward = self.db.complete_task(user_id, task_id)
+        
+        if reward:
+            answer_callback_query(callback_id, f"✅ Göreve katıldın!\n💰 Ödül: ${reward}\n⏳ Onay bekleniyor...")
+            
+            # Adminlere bildirim
+            for admin in ADMIN_IDS:
+                try:
+                    send_message(admin, f"""
+🎯 *YENİ GÖREV KATILIMI*
+
+👤 Kullanıcı: {user['first_name']} (@{user['username'] or 'N/A'})
+🆔 ID: `{user_id}`
+💰 Ödül: `${reward}`
+⏰ Zaman: {datetime.now().strftime('%H:%M:%S')}
+                    """)
+                except:
+                    pass
+        else:
+            answer_callback_query(callback_id, "❌ Göreve zaten katıldın veya görev bulunamadı", True)
+
+# Flask Routes
+@app.route('/')
+def home():
+    return "🤖 TaskizBot Aktif!"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        update = request.get_json()
+        bot.handle_update(update)
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+@app.route('/setwebhook', methods=['GET'])
+def set_webhook():
+    if not WEBHOOK_URL:
+        return "WEBHOOK_URL ayarlanmamış", 400
+    
+    url = f"{BASE_URL}setWebhook?url={WEBHOOK_URL}/webhook"
+    response = requests.get(url)
+    return response.json()
+
+# Bot Başlatma
+bot = TaskizBot()
+
+if __name__ == '__main__':
+    # Webhook ayarla
+    if WEBHOOK_URL:
+        try:
+            url = f"{BASE_URL}setWebhook?url={WEBHOOK_URL}/webhook"
+            response = requests.get(url)
+            print(f"Webhook ayarlandı: {response.json()}")
+        except Exception as e:
+            print(f"Webhook ayarlama hatası: {e}")
+    
+    # Flask'ı başlat
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
