@@ -8,6 +8,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore, db as realtime_db
 import uuid
 import hashlib
+import threading
+import time
 
 # 🔧 AYARLAR
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -25,6 +27,114 @@ firebase_admin.initialize_app(cred, {
 db = firestore.client()
 rtdb = realtime_db.reference()
 
+# 🌍 DİL SİSTEMİ
+LANGUAGES = {
+    'tr': {
+        'name': 'Türkçe',
+        'flag': '🇹🇷',
+        'strings': {
+            # Ana menü
+            'welcome': '🌟 <b>Hoş Geldin {name}!</b>\n\n💰 <b>Bakiyen:</b> <code>${balance:.4f}</code>\n🎯 <b>Görevler:</b> <code>{tasks}</code>\n👥 <b>Referans:</b> <code>{refs}</code>\n🚀 <b>Seviye:</b> {level}\n\n<i>Hemen görevlere başla ve kazan!</i>',
+            'menu_tasks': '🎯 Görevler',
+            'menu_balance': '💰 Bakiye',
+            'menu_deposit': '💳 Yükle',
+            'menu_withdraw': '🏧 Çek',
+            'menu_referral': '👥 Davet',
+            'menu_ads': '📢 Reklam',
+            'menu_create_task': '➕ Görev Oluştur',
+            'menu_admin': '👑 Admin',
+            'menu_settings': '⚙️ Ayarlar',
+            
+            # Görevler
+            'task_types': '🎯 <b>Görev Türleri</b>\n\nHangi tür görev yapmak istersin?',
+            'task_channel': '📢 Kanal',
+            'task_group': '👥 Grup',
+            'task_post': '📝 Post',
+            'task_bot': '🤖 Bot',
+            'refresh': '🔄 Yenile',
+            'no_tasks': '📭 <b>{type} Görevleri</b>\n\nBu türde aktif görev bulunmuyor.',
+            
+            # Bakiye
+            'balance_title': '💰 <b>Bakiye Durumu</b>\n━━━━━━━━━━━━━━━━\n💵 <b>Mevcut:</b> <code>${balance:.4f}</code>\n━━━━━━━━━━━━━━━━\n\n🎯 <b>Toplam Görev:</b> {tasks}\n📈 <b>Toplam Kazanç:</b> <code>${earned:.4f}</code>\n👥 <b>Ref Bonus:</b> <code>${ref_bonus:.4f}</code>\n\n💡 <b>Minimum Çekim:</b> <code>${min_withdraw}</code>',
+            
+            # Referans
+            'referral_title': '👥 <b>Referans Sistemi</b>\n━━━━━━━━━━━━━━━━\n👤 <b>Referansların:</b> <code>{ref_count}</code>\n💰 <b>Toplam Bonus:</b> <code>${total_bonus:.4f}</code>\n🚀 <b>Seviyen:</b> {level}\n━━━━━━━━━━━━━━━━\n\n🎁 <b>Her referans:</b> <code>${ref_bonus}</code>\n💸 <b>Görev komisyonu:</b> %25\n\n🔗 <b>Referans Linkin:</b>\n<code>{ref_link}</code>\n\n📋 <b>Referans Kodun:</b>\n<code>{ref_code}</code>',
+            
+            # Butonlar
+            'back': '🔙 Geri',
+            'home': '🏠 Ana Menü',
+            'copy_ref': '📋 Linki Kopyala',
+            'join': '✅ Katıl',
+            'completed': '✅ Tamamladım',
+            'cancel': '❌ İptal',
+            
+            # Mesajlar
+            'task_joined': '✅ <b>Göreve Katıldın!</b>\n\n🎯 {title}\n💰 <b>Ödül:</b> <code>${reward:.4f}</code>\n\n📋 <b>Şimdi şunları yap:</b>\n1. Linke tıkla: {link}\n2. Talimatları uygula\n3. Tamamladığında butona bas\n\n⏳ <b>Süre:</b> 24 saat',
+            'task_completed': '🎉 <b>Görev Tamamlandı!</b>\n\n💰 <b>Kazanç:</b> <code>${reward:.4f}</code>\n✅ <b>Bakiyene eklendi!</b>\n\n<i>Yeni görevler için görevlere dön.</i>',
+            
+            # Zorunlu kanal
+            'channel_check': '🚫 <b>Zorunlu Kanal Kontrolü</b>\n\nDevam etmek için kanallara katıl:\n{channels}\n\n✅ Katıldıktan sonra <b>Kontrol Et</b> butonuna bas.',
+            'check_button': '✅ Kontrol Et',
+            
+            # Dil seçimi
+            'select_language': '🌍 <b>DİL SEÇİMİ / LANGUAGE SELECTION</b>\n\nLütfen kullanmak istediğiniz dili seçiniz.\nPlease select your preferred language.',
+            'language_selected': '✅ Dil seçildi!',
+        }
+    },
+    'en': {
+        'name': 'English',
+        'flag': '🇺🇸',
+        'strings': {
+            # Main menu
+            'welcome': '🌟 <b>Welcome {name}!</b>\n\n💰 <b>Balance:</b> <code>${balance:.4f}</code>\n🎯 <b>Tasks:</b> <code>{tasks}</code>\n👥 <b>Referrals:</b> <code>{refs}</code>\n🚀 <b>Level:</b> {level}\n\n<i>Start tasks and earn now!</i>',
+            'menu_tasks': '🎯 Tasks',
+            'menu_balance': '💰 Balance',
+            'menu_deposit': '💳 Deposit',
+            'menu_withdraw': '🏧 Withdraw',
+            'menu_referral': '👥 Referral',
+            'menu_ads': '📢 Ads',
+            'menu_create_task': '➕ Create Task',
+            'menu_admin': '👑 Admin',
+            'menu_settings': '⚙️ Settings',
+            
+            # Tasks
+            'task_types': '🎯 <b>Task Types</b>\n\nWhich task type do you want?',
+            'task_channel': '📢 Channel',
+            'task_group': '👥 Group',
+            'task_post': '📝 Post',
+            'task_bot': '🤖 Bot',
+            'refresh': '🔄 Refresh',
+            'no_tasks': '📭 <b>{type} Tasks</b>\n\nNo active tasks in this category.',
+            
+            # Balance
+            'balance_title': '💰 <b>Balance Status</b>\n━━━━━━━━━━━━━━━━\n💵 <b>Current:</b> <code>${balance:.4f}</code>\n━━━━━━━━━━━━━━━━\n\n🎯 <b>Total Tasks:</b> {tasks}\n📈 <b>Total Earned:</b> <code>${earned:.4f}</code>\n👥 <b>Ref Bonus:</b> <code>${ref_bonus:.4f}</code>\n\n💡 <b>Min Withdrawal:</b> <code>${min_withdraw}</code>',
+            
+            # Referral
+            'referral_title': '👥 <b>Referral System</b>\n━━━━━━━━━━━━━━━━\n👤 <b>Your Referrals:</b> <code>{ref_count}</code>\n💰 <b>Total Bonus:</b> <code>${total_bonus:.4f}</code>\n🚀 <b>Your Level:</b> {level}\n━━━━━━━━━━━━━━━━\n\n🎁 <b>Per referral:</b> <code>${ref_bonus}</code>\n💸 <b>Task commission:</b> 25%\n\n🔗 <b>Your Referral Link:</b>\n<code>{ref_link}</code>\n\n📋 <b>Your Referral Code:</b>\n<code>{ref_code}</code>',
+            
+            # Buttons
+            'back': '🔙 Back',
+            'home': '🏠 Main Menu',
+            'copy_ref': '📋 Copy Link',
+            'join': '✅ Join',
+            'completed': '✅ Completed',
+            'cancel': '❌ Cancel',
+            
+            # Messages
+            'task_joined': '✅ <b>Task Joined!</b>\n\n🎯 {title}\n💰 <b>Reward:</b> <code>${reward:.4f}</code>\n\n📋 <b>Now do this:</b>\n1. Click link: {link}\n2. Follow instructions\n3. Click button when done\n\n⏳ <b>Time:</b> 24 hours',
+            'task_completed': '🎉 <b>Task Completed!</b>\n\n💰 <b>Earned:</b> <code>${reward:.4f}</code>\n✅ <b>Added to balance!</b>\n\n<i>Return to tasks for more.</i>',
+            
+            # Channel check
+            'channel_check': '🚫 <b>Mandatory Channel Check</b>\n\nJoin these channels to continue:\n{channels}\n\n✅ After joining, tap <b>Check</b> button.',
+            'check_button': '✅ Check',
+            
+            # Language selection
+            'select_language': '🌍 <b>DİL SEÇİMİ / LANGUAGE SELECTION</b>\n\nLütfen kullanmak istediğiniz dili seçiniz.\nPlease select your preferred language.',
+            'language_selected': '✅ Language selected!',
+        }
+    }
+}
+
 # ⚙️ SİSTEM AYARLARI
 TASK_REWARDS = {
     "kanal": 0.0025,
@@ -35,7 +145,7 @@ TASK_REWARDS = {
 
 MIN_WITHDRAW = 0.30
 REF_BONUS = 0.005
-TASK_COMMISSION = 0.25  # %25 referans komisyonu
+TASK_COMMISSION = 0.25
 
 # 📢 ZORUNLU KANALLAR
 MANDATORY_CHANNELS = [
@@ -43,7 +153,7 @@ MANDATORY_CHANNELS = [
 ]
 
 # 🚀 TELEGRAM FONKSİYONLARI
-def send_msg(chat_id, text, buttons=None, markup_type="inline", photo=None):
+def send_msg(chat_id, text, buttons=None, markup_type="inline", photo=None, lang='tr'):
     if photo:
         url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
         payload = {
@@ -94,7 +204,6 @@ def answer_callback(callback_id, text=None, alert=False):
     requests.post(url, json=payload)
 
 def check_member(channel_username, user_id):
-    """Kanal/grup üyeliğini kontrol et"""
     try:
         url = f"https://api.telegram.org/bot{TOKEN}/getChatMember"
         payload = {"chat_id": f"@{channel_username}", "user_id": user_id}
@@ -106,28 +215,57 @@ def check_member(channel_username, user_id):
     except:
         return False
 
-def enforce_channels(user_id):
+# 🌍 DİL FONKSİYONLARI
+def get_text(key, lang='tr', **kwargs):
+    """Dil metnini getir"""
+    if lang not in LANGUAGES:
+        lang = 'tr'
+    
+    text = LANGUAGES[lang]['strings'].get(key, '')
+    if text and kwargs:
+        try:
+            return text.format(**kwargs)
+        except:
+            return text
+    return text
+
+def show_language_selection(user_id):
+    """Dil seçimini göster"""
+    text = get_text('select_language', 'tr')
+    
+    buttons = [[
+        {"text": "🇹🇷 Türkçe", "callback_data": "lang_tr"},
+        {"text": "🇺🇸 English", "callback_data": "lang_en"}
+    ]]
+    
+    send_msg(user_id, text, buttons)
+
+def enforce_channels(user_id, lang='tr'):
     """Zorunlu kanal kontrolü"""
     missing = []
     for channel in MANDATORY_CHANNELS:
         if not check_member(channel["username"], user_id):
             missing.append(channel)
     
-    if missing:
-        text = "🚫 <b>Zorunlu Kanal Kontrolü</b>\n\n"
-        text += "Devam etmek için kanallara katıl:\n"
-        
-        buttons = []
-        for channel in missing:
-            text += f"\n{channel['emoji']} {channel['name']}: @{channel['username']}"
-            buttons.append([{"text": f"{channel['emoji']} {channel['name']}", "url": channel["link"]}])
-        
-        buttons.append([{"text": "✅ Kontrol Et", "callback_data": "check_channels"}])
-        buttons.append([{"text": "🏠 Ana Menü", "callback_data": "main_menu"}])
-        
-        send_msg(user_id, text, buttons)
-        return False
-    return True
+    if not missing:
+        return True
+    
+    # Kanal listesini oluştur
+    channel_text = ""
+    for channel in missing:
+        channel_text += f"\n{channel['emoji']} {channel['name']}: @{channel['username']}"
+    
+    text = get_text('channel_check', lang, channels=channel_text)
+    
+    buttons = []
+    for channel in missing:
+        buttons.append([{"text": f"{channel['emoji']} {channel['name']}", "url": channel["link"]}])
+    
+    buttons.append([{"text": get_text('check_button', lang), "callback_data": "check_channels"}])
+    buttons.append([{"text": get_text('home', lang), "callback_data": "main_menu"}])
+    
+    send_msg(user_id, text, buttons)
+    return False
 
 # 🗄️ FIREBASE FONKSİYONLARI
 def get_user(user_id):
@@ -136,7 +274,7 @@ def get_user(user_id):
         return doc.to_dict()
     return None
 
-def create_user(user_id, username, first_name, last_name, referred_by=None):
+def create_user(user_id, username, first_name, last_name, referred_by=None, lang='tr'):
     ref_code = str(uuid.uuid4())[:8].upper()
     
     user_data = {
@@ -149,6 +287,8 @@ def create_user(user_id, username, first_name, last_name, referred_by=None):
         "referral_code": ref_code,
         "referred_by": referred_by,
         "total_earned": 0.0,
+        "total_ref_bonus": 0.0,
+        "language": lang,
         "created_at": datetime.now().isoformat(),
         "last_active": datetime.now().isoformat(),
         "status": "active"
@@ -157,35 +297,38 @@ def create_user(user_id, username, first_name, last_name, referred_by=None):
     # Firestore
     db.collection("users").document(str(user_id)).set(user_data)
     
-    # Realtime (hızlı erişim)
+    # Realtime
     rtdb.child("users").child(str(user_id)).set({
         "balance": 0.0,
         "username": username or "",
-        "ref_code": ref_code
+        "ref_code": ref_code,
+        "ref_by": referred_by or "",
+        "language": lang
     })
+    
+    # 📈 İstatistik
+    rtdb.child("stats").child("total_users").transaction(lambda x: (x or 0) + 1)
     
     # Referans bonusu
     if referred_by:
         add_referral_bonus(referred_by, user_id)
-    
-    # İstatistik
-    rtdb.child("stats").child("total_users").transaction(lambda x: (x or 0) + 1)
     
     return user_data
 
 def add_referral_bonus(referrer_id, referred_id):
     referrer = get_user(referrer_id)
     if referrer:
-        # Bonus ekle
         new_balance = referrer.get("balance", 0) + REF_BONUS
+        total_ref_bonus = referrer.get("total_ref_bonus", 0) + REF_BONUS
+        
         db.collection("users").document(str(referrer_id)).update({
             "balance": new_balance,
-            "total_earned": referrer.get("total_earned", 0) + REF_BONUS
+            "total_earned": referrer.get("total_earned", 0) + REF_BONUS,
+            "total_ref_bonus": total_ref_bonus
         })
         
         rtdb.child("users").child(str(referrer_id)).update({"balance": new_balance})
         
-        # Referans kaydı
         db.collection("referrals").add({
             "referrer_id": referrer_id,
             "referred_id": referred_id,
@@ -193,34 +336,48 @@ def add_referral_bonus(referrer_id, referred_id):
             "date": datetime.now().isoformat()
         })
 
+def get_ref_count(user_id):
+    refs = db.collection("users").where("referred_by", "==", user_id).stream()
+    return len(list(refs))
+
+def get_ref_level(count, lang='tr'):
+    if lang == 'tr':
+        if count >= 50: return "👑 Kral"
+        elif count >= 25: return "⭐ Yıldız"
+        elif count >= 10: return "🚀 Ace"
+        elif count >= 5: return "🔥 Aktif"
+        else: return "🌱 Yeni"
+    else:
+        if count >= 50: return "👑 King"
+        elif count >= 25: return "⭐ Star"
+        elif count >= 10: return "🚀 Ace"
+        elif count >= 5: return "🔥 Active"
+        else: return "🌱 New"
+
 def update_balance(user_id, amount, reason=""):
     user = get_user(user_id)
     if user:
         new_balance = user.get("balance", 0) + amount
         
-        # Firestore
         updates = {"balance": new_balance, "last_active": datetime.now().isoformat()}
         if amount > 0:
             updates["total_earned"] = user.get("total_earned", 0) + amount
         
         db.collection("users").document(str(user_id)).update(updates)
-        
-        # Realtime
         rtdb.child("users").child(str(user_id)).update({"balance": new_balance})
         
-        # İşlem kaydı
         db.collection("transactions").add({
             "user_id": user_id,
             "amount": amount,
             "type": reason,
-            "date": datetime.now().isoformat()
+            "date": datetime.now().isoformat(),
+            "balance_after": new_balance
         })
         
         return True
     return False
 
 def get_active_tasks(user_id=None):
-    """Kullanıcının katılmadığı aktif görevler"""
     tasks = []
     docs = db.collection("tasks").where("status", "==", "active").stream()
     
@@ -228,7 +385,6 @@ def get_active_tasks(user_id=None):
         task = doc.to_dict()
         task["id"] = doc.id
         
-        # Katılım kontrolü
         if user_id:
             participated = db.collection("task_participants")\
                 .where("task_id", "==", doc.id)\
@@ -236,7 +392,6 @@ def get_active_tasks(user_id=None):
             if list(participated):
                 continue
         
-        # Limit kontrolü
         participants = db.collection("task_participants")\
             .where("task_id", "==", doc.id).stream()
         task["current"] = len(list(participants))
@@ -247,8 +402,6 @@ def get_active_tasks(user_id=None):
     return tasks
 
 def add_task_participant(user_id, task_id):
-    """Göreve katılım kaydı"""
-    # Zaten katıldı mı?
     existing = db.collection("task_participants")\
         .where("task_id", "==", task_id)\
         .where("user_id", "==", user_id).limit(1).stream()
@@ -256,7 +409,6 @@ def add_task_participant(user_id, task_id):
     if list(existing):
         return False
     
-    # Katılım kaydı
     db.collection("task_participants").add({
         "user_id": user_id,
         "task_id": task_id,
@@ -264,25 +416,18 @@ def add_task_participant(user_id, task_id):
         "status": "joined"
     })
     
-    # Görev katılımcı sayısını artır
     task_ref = db.collection("tasks").document(task_id)
     task_ref.update({"current_participants": firestore.Increment(1)})
-    
-    # İstatistik
-    rtdb.child("stats").child("total_participations").transaction(lambda x: (x or 0) + 1)
     
     return True
 
 def complete_task_participation(user_id, task_id, proof_url=None):
-    """Görev tamamlama"""
-    # Görevi al
     task_doc = db.collection("tasks").document(task_id).get()
     if not task_doc.exists:
         return None
     
     task = task_doc.to_dict()
     
-    # Katılım kaydını bul
     participant_docs = db.collection("task_participants")\
         .where("task_id", "==", task_id)\
         .where("user_id", "==", user_id).stream()
@@ -290,7 +435,6 @@ def complete_task_participation(user_id, task_id, proof_url=None):
     if not list(participant_docs):
         return None
     
-    # Tamamlandı olarak işaretle
     for doc in participant_docs:
         doc_ref = db.collection("task_participants").document(doc.id)
         doc_ref.update({
@@ -299,58 +443,71 @@ def complete_task_participation(user_id, task_id, proof_url=None):
             "proof_url": proof_url
         })
     
-    # Ödül ver
     reward = task["reward"]
     update_balance(user_id, reward, "task_reward")
     
-    # Kullanıcı istatistikleri
     user = get_user(user_id)
     db.collection("users").document(str(user_id)).update({
         "tasks_completed": user.get("tasks_completed", 0) + 1
     })
     
-    # Referans komisyonu
     if user and user.get("referred_by"):
         commission = reward * TASK_COMMISSION
         update_balance(user["referred_by"], commission, "referral_commission")
     
     return reward
 
-def create_task_from_user(creator_id, task_type, title, target_link, budget, max_participants=10):
-    """Kullanıcı görev oluşturma"""
-    reward = TASK_REWARDS.get(task_type, 0.001)
-    
-    # Bakiye kontrolü
+def create_task_from_user(creator_id, task_data):
     user = get_user(creator_id)
+    if not user:
+        return None, "User not found"
+    
+    budget = task_data.get("budget", 0)
     if user.get("balance", 0) < budget:
-        return None, "Bakiye yetersiz"
+        return None, "Insufficient balance"
     
-    # Görev oluştur
-    task_data = {
-        "creator_id": creator_id,
-        "type": task_type,
-        "title": title,
-        "target_link": target_link,
-        "reward": reward,
-        "budget": budget,
-        "remaining_budget": budget,
-        "max_participants": max_participants,
-        "current_participants": 0,
-        "status": "active",
-        "created_at": datetime.now().isoformat()
-    }
-    
-    # Bakiye düş
     update_balance(creator_id, -budget, "create_task")
     
-    # Görevi kaydet
     task_ref = db.collection("tasks").add(task_data)
     task_id = task_ref[1].id
     
-    # Realtime'a ekle
     rtdb.child("tasks").child(task_id).set(task_data)
     
-    return task_id, "Başarılı"
+    return task_id, "Success"
+
+# 📢 BİLDİRİM FONKSİYONLARI
+def notify_channel(text):
+    try:
+        send_msg(STATS_CHANNEL, text)
+    except:
+        pass
+
+def notify_admin(text):
+    try:
+        send_msg(ADMIN_ID, text)
+    except:
+        pass
+
+def notify_new_user(user_id, username, first_name, referred_by=None):
+    ref_text = ""
+    if referred_by:
+        ref_user = get_user(referred_by)
+        ref_name = ref_user.get('first_name', '') if ref_user else str(referred_by)
+        ref_count = get_ref_count(referred_by)
+        ref_text = f"""👥 <b>Referans:</b> <code>{referred_by}</code> ({ref_name})
+📊 <b>Toplam Ref:</b> <code>{ref_count}</code>
+"""
+    
+    text = f"""
+👤 <b>YENİ ÜYE KATILDI</b>
+━━━━━━━━━━━━━━━━
+🎉 <b>Ad:</b> {first_name}
+🆔 <b>ID:</b> <code>{user_id}</code>
+{ref_text}📅 <b>Saat:</b> {datetime.now().strftime('%H:%M')}
+━━━━━━━━━━━━━━━━
+<i>Hoş geldin! 🎯</i>
+    """
+    notify_channel(text)
 
 # 🎯 BOT SINIFI
 class TaskizBot:
@@ -368,14 +525,13 @@ class TaskizBot:
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
         
-        # 🎯 START komutu (referans kontrolü)
+        # 🎯 START komutu
         if text.startswith("/start"):
             parts = text.split()
             referred_by = None
             
             if len(parts) > 1:
                 ref_code = parts[1]
-                # Ref kodu ara
                 docs = db.collection("users").where("referral_code", "==", ref_code).limit(1).stream()
                 for doc in docs:
                     referred_by = doc.to_dict()["user_id"]
@@ -388,71 +544,77 @@ class TaskizBot:
                 first_name = msg["from"].get("first_name", "")
                 last_name = msg["from"].get("last_name", "")
                 
-                user = create_user(user_id, username, first_name, last_name, referred_by)
+                # Önce dil seçimi göster
+                show_language_selection(user_id)
+                
+                # State'e kaydet
+                self.user_states[user_id] = {
+                    "action": "waiting_language",
+                    "username": username,
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "referred_by": referred_by
+                }
+                return
+            
+            # Kullanıcı varsa dilini al
+            lang = user.get("language", "tr")
             
             # Zorunlu kanal kontrolü
-            if not enforce_channels(user_id):
+            if not enforce_channels(user_id, lang):
                 return
             
-            self.show_main_menu(user_id)
+            self.show_main_menu(user_id, lang)
             return
         
-        # 👑 ADMIN komutları
-        if str(user_id) == ADMIN_ID:
+        # 👑 ADMIN
+        if str(user_id) == ADMIN_ID and text.startswith("/"):
             if text == "/admin":
                 self.show_admin_panel(user_id)
-                return
-            elif text.startswith("/addbalance"):
-                self.admin_add_balance(text)
-                return
-            elif text.startswith("/stats"):
-                self.admin_stats(user_id)
-                return
+            return
         
-        # Kullanıcı state kontrolü
+        # State kontrolü
         if user_id in self.user_states:
             state = self.user_states[user_id]
             action = state.get("action")
             
-            if action == "waiting_task_type":
-                self.process_task_type(user_id, text)
-            elif action == "waiting_task_link":
-                self.process_task_link(user_id, text)
-            elif action == "waiting_task_title":
-                self.process_task_title(user_id, text)
-            elif action == "waiting_task_budget":
-                self.process_task_budget(user_id, text)
-            elif action == "waiting_deposit_amount":
-                self.process_deposit_amount(user_id, text)
-            elif action == "waiting_post_proof":
-                self.process_post_proof(user_id, msg)
+            if action == "waiting_language":
+                # Dil seçimi handle_callback'da yapılacak
+                return
+            elif action == "waiting_post_image":
+                self.process_post_image(user_id, msg)
+                return
+        
+        # Kullanıcı var mı kontrol et
+        user = get_user(user_id)
+        if not user:
+            # Dil seçimi göster
+            show_language_selection(user_id)
+            return
+        
+        # Dil ayarı
+        lang = user.get("language", "tr")
+        
+        # Zorunlu kanal kontrolü
+        if not enforce_channels(user_id, lang):
             return
         
         # 📱 Ana butonlar
-        user = get_user(user_id)
-        if not user:
-            return
-        
-        if not enforce_channels(user_id):
-            return
-        
-        if text == "🏠 Ana Menü":
-            self.show_main_menu(user_id)
-        elif text == "🎯 Görevler":
-            self.show_task_types(user_id)
-        elif text == "💰 Bakiye":
-            self.show_balance(user_id)
-        elif text == "💳 Yükle":
-            self.show_deposit(user_id)
-        elif text == "🏧 Çek":
-            self.show_withdraw(user_id)
-        elif text == "👥 Davet":
-            self.show_referral(user_id)
-        elif text == "📢 Reklam":
-            self.show_ads(user_id)
-        elif text == "➕ Görev Oluştur":
-            self.start_create_task(user_id)
-        elif text == "👑 Admin" and str(user_id) == ADMIN_ID:
+        if text == get_text('home', lang):
+            self.show_main_menu(user_id, lang)
+        elif text == get_text('menu_tasks', lang):
+            self.show_task_types(user_id, lang)
+        elif text == get_text('menu_balance', lang):
+            self.show_balance(user_id, lang)
+        elif text == get_text('menu_deposit', lang):
+            self.show_deposit(user_id, lang)
+        elif text == get_text('menu_withdraw', lang):
+            self.show_withdraw(user_id, lang)
+        elif text == get_text('menu_referral', lang):
+            self.show_referral(user_id, lang)
+        elif text == get_text('menu_create_task', lang):
+            self.start_post_task(user_id, lang)
+        elif text == get_text('menu_admin', lang) and str(user_id) == ADMIN_ID:
             self.show_admin_panel(user_id)
     
     def handle_callback(self, callback):
@@ -461,44 +623,110 @@ class TaskizBot:
         callback_id = callback["id"]
         
         try:
-            if data == "main_menu":
-                self.show_main_menu(user_id)
+            # Dil seçimi
+            if data.startswith("lang_"):
+                lang = data.split("_")[1]
+                
+                if user_id in self.user_states and self.user_states[user_id].get("action") == "waiting_language":
+                    # Yeni kullanıcı oluştur
+                    state = self.user_states[user_id]
+                    user = create_user(
+                        user_id, 
+                        state["username"],
+                        state["first_name"],
+                        state["last_name"],
+                        state["referred_by"],
+                        lang
+                    )
+                    
+                    # State'i temizle
+                    del self.user_states[user_id]
+                    
+                    # Bildirim
+                    notify_new_user(user_id, state["username"], state["first_name"], state["referred_by"])
+                    
+                    answer_callback(callback_id, get_text('language_selected', lang))
+                    
+                    # Zorunlu kanal kontrolü
+                    if not enforce_channels(user_id, lang):
+                        return
+                    
+                    self.show_main_menu(user_id, lang)
+                else:
+                    # Mevcut kullanıcı dil güncelleme
+                    db.collection("users").document(str(user_id)).update({"language": lang})
+                    rtdb.child("users").child(str(user_id)).update({"language": lang})
+                    
+                    answer_callback(callback_id, get_text('language_selected', lang))
+                    self.show_main_menu(user_id, lang)
+                return
+            
+            elif data == "main_menu":
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                self.show_main_menu(user_id, lang)
+            
             elif data == "check_channels":
-                if enforce_channels(user_id):
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                if enforce_channels(user_id, lang):
                     answer_callback(callback_id, "✅ Tüm kanallara katıldın!")
-                    self.show_main_menu(user_id)
+                    self.show_main_menu(user_id, lang)
                 else:
                     answer_callback(callback_id, "❌ Hala katılmadığın kanallar var!")
+            
             elif data.startswith("task_type_"):
                 task_type = data.split("_")[2]
-                self.show_tasks_of_type(user_id, task_type)
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                self.show_tasks_of_type(user_id, task_type, lang)
                 answer_callback(callback_id)
+            
             elif data.startswith("join_task_"):
                 task_id = data.split("_")[2]
                 self.join_task(user_id, task_id, callback_id)
+            
             elif data.startswith("view_task_"):
                 task_id = data.split("_")[2]
-                self.view_task_details(user_id, task_id)
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                self.view_task_details(user_id, task_id, lang)
                 answer_callback(callback_id)
+            
             elif data == "refresh_tasks":
-                self.show_task_types(user_id)
-                answer_callback(callback_id, "🔄 Yenilendi")
-            elif data == "create_task":
-                self.start_create_task(user_id)
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                self.show_task_types(user_id, lang)
+                answer_callback(callback_id, get_text('refresh', lang))
+            
+            elif data == "create_post_task":
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                self.start_post_task(user_id, lang)
                 answer_callback(callback_id)
+            
             elif data == "start_deposit":
-                self.start_deposit(user_id)
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                self.show_deposit(user_id, lang)
                 answer_callback(callback_id)
+            
             elif data == "start_withdraw":
-                self.start_withdraw(user_id)
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                self.show_withdraw(user_id, lang)
                 answer_callback(callback_id)
+            
             elif data.startswith("complete_task_"):
                 task_id = data.split("_")[2]
                 self.complete_task(user_id, task_id, callback_id)
+            
             elif data == "cancel_action":
                 if user_id in self.user_states:
                     del self.user_states[user_id]
-                send_msg(user_id, "❌ İşlem iptal edildi.")
+                user = get_user(user_id)
+                lang = user.get("language", "tr") if user else "tr"
+                send_msg(user_id, get_text('cancel', lang))
                 answer_callback(callback_id)
             
         except Exception as e:
@@ -506,77 +734,69 @@ class TaskizBot:
             answer_callback(callback_id, "❌ Hata!")
     
     # 🏠 ANA MENÜ
-    def show_main_menu(self, user_id):
+    def show_main_menu(self, user_id, lang='tr'):
         user = get_user(user_id)
         if not user:
             return
         
-        text = f"""
-🌟 <b>Hoş Geldin {user['first_name']}!</b>
-
-💰 <b>Bakiyen:</b> <code>${user.get('balance', 0):.4f}</code>
-🎯 <b>Görevler:</b> <code>{user.get('tasks_completed', 0)}</code>
-👥 <b>Referans:</b> <code>{self.get_ref_count(user_id)}</code>
-
-<i>Hemen görevlere başla ve kazan!</i>
-        """
+        ref_count = get_ref_count(user_id)
+        level = get_ref_level(ref_count, lang)
+        
+        text = get_text('welcome', lang, 
+                       name=user['first_name'],
+                       balance=user.get('balance', 0),
+                       tasks=user.get('tasks_completed', 0),
+                       refs=ref_count,
+                       level=level)
         
         buttons = [
-            ["🎯 Görevler", "💰 Bakiye"],
-            ["💳 Yükle", "🏧 Çek"],
-            ["👥 Davet", "📢 Reklam"],
-            ["➕ Görev Oluştur"]
+            [get_text('menu_tasks', lang), get_text('menu_balance', lang)],
+            [get_text('menu_deposit', lang), get_text('menu_withdraw', lang)],
+            [get_text('menu_referral', lang), get_text('menu_ads', lang)],
+            [get_text('menu_create_task', lang)]
         ]
         
         if str(user_id) == ADMIN_ID:
-            buttons.append(["👑 Admin"])
+            buttons.append([get_text('menu_admin', lang)])
         
         send_msg(user_id, text, buttons, "keyboard")
     
     # 🎯 GÖREV SİSTEMİ
-    def show_task_types(self, user_id):
-        text = """
-🎯 <b>Görev Türleri</b>
-
-Hangi tür görev yapmak istersin?
-        """
+    def show_task_types(self, user_id, lang='tr'):
+        text = get_text('task_types', lang)
         
         buttons = [[
-            {"text": "📢 Kanal", "callback_data": "task_type_kanal"},
-            {"text": "👥 Grup", "callback_data": "task_type_grup"}
+            {"text": get_text('task_channel', lang), "callback_data": "task_type_kanal"},
+            {"text": get_text('task_group', lang), "callback_data": "task_type_grup"}
         ], [
-            {"text": "📝 Post", "callback_data": "task_type_post"},
-            {"text": "🤖 Bot", "callback_data": "task_type_bot"}
+            {"text": get_text('task_post', lang), "callback_data": "task_type_post"},
+            {"text": get_text('task_bot', lang), "callback_data": "task_type_bot"}
         ], [
-            {"text": "🔄 Yenile", "callback_data": "refresh_tasks"},
-            {"text": "🏠 Ana Menü", "callback_data": "main_menu"}
+            {"text": get_text('refresh', lang), "callback_data": "refresh_tasks"},
+            {"text": get_text('menu_create_task', lang), "callback_data": "create_post_task"}
+        ], [
+            {"text": get_text('home', lang), "callback_data": "main_menu"}
         ]]
         
         send_msg(user_id, text, buttons)
     
-    def show_tasks_of_type(self, user_id, task_type):
+    def show_tasks_of_type(self, user_id, task_type, lang='tr'):
         tasks = get_active_tasks(user_id)
         type_tasks = [t for t in tasks if t.get("type") == task_type]
         
         if not type_tasks:
-            text = f"""
-📭 <b>{task_type.capitalize()} Görevleri</b>
-
-Bu türde aktif görev bulunmuyor.
-            """
+            type_name = get_text(f'task_{task_type}', lang)
+            text = get_text('no_tasks', lang, type=type_name)
             buttons = [[
-                {"text": "🔙 Geri", "callback_data": "refresh_tasks"},
-                {"text": "➕ Yeni Oluştur", "callback_data": "create_task"}
+                {"text": get_text('back', lang), "callback_data": "refresh_tasks"},
+                {"text": get_text('menu_create_task', lang), "callback_data": "create_post_task"}
             ]]
         else:
-            text = f"""
-🎯 <b>{task_type.capitalize()} Görevleri</b> ({len(type_tasks)})
-
-Aşağıdaki görevlerden birini seç:
-            """
+            type_name = get_text(f'task_{task_type}', lang)
+            text = f"🎯 <b>{type_name} Görevleri</b> ({len(type_tasks)})\n\nAşağıdaki görevlerden birini seç:"
             
             buttons = []
-            for task in type_tasks[:5]:  # Max 5 görev
+            for task in type_tasks[:5]:
                 btn_text = f"${task['reward']:.4f} ({task.get('current', 0)}/{task.get('max_participants', 10)})"
                 buttons.append([{
                     "text": btn_text,
@@ -584,15 +804,15 @@ Aşağıdaki görevlerden birini seç:
                 }])
             
             buttons.append([
-                {"text": "🔙 Geri", "callback_data": "refresh_tasks"},
-                {"text": "🔄 Yenile", "callback_data": f"task_type_{task_type}"}
+                {"text": get_text('back', lang), "callback_data": "refresh_tasks"},
+                {"text": get_text('refresh', lang), "callback_data": f"task_type_{task_type}"}
             ])
         
-        buttons.append([{"text": "🏠 Ana Menü", "callback_data": "main_menu"}])
+        buttons.append([{"text": get_text('home', lang), "callback_data": "main_menu"}])
         
         send_msg(user_id, text, buttons)
     
-    def view_task_details(self, user_id, task_id):
+    def view_task_details(self, user_id, task_id, lang='tr'):
         task_doc = db.collection("tasks").document(task_id).get()
         if not task_doc.exists:
             send_msg(user_id, "❌ Görev bulunamadı!")
@@ -600,7 +820,6 @@ Aşağıdaki görevlerden birini seç:
         
         task = task_doc.to_dict()
         
-        # Katılım kontrolü
         participated = db.collection("task_participants")\
             .where("task_id", "==", task_id)\
             .where("user_id", "==", user_id).stream()
@@ -614,7 +833,8 @@ Aşağıdaki görevlerden birini seç:
 💰 <b>Ödül:</b> <code>${task['reward']:.4f}</code>
 👥 <b>Katılım:</b> {task.get('current_participants', 0)}/{task.get('max_participants', 10)}
 
-🔗 <b>Link:</b> {task['target_link']}
+📢 <b>Reklam Bütçesi:</b> <code>${task.get('budget', 0):.4f}</code>
+🎯 <b>Kalan Katılım:</b> {task.get('max_participants', 10) - task.get('current_participants', 0)} kişi
 
 💡 <b>Talimatlar:</b>
 """
@@ -624,20 +844,23 @@ Aşağıdaki görevlerden birini seç:
         elif task["type"] == "grup":
             text += "• Grubu aç\n• Katıl butonuna bas\n• Mesaj gönder"
         elif task["type"] == "post":
-            text += "• Postu aç\n• Like/beğen\n• Yorum yap"
+            if task.get("image_url"):
+                text += "• Postu aç\n• Like/beğen\n• Yorum yap"
+                send_msg(user_id, text, photo=task.get("image_url"))
+                return
         elif task["type"] == "bot":
             text += "• Botu aç\n• /start yaz\n• Bekle"
         
         buttons = []
         
         if not has_participated:
-            buttons.append([{"text": "✅ Katıl", "callback_data": f"join_task_{task_id}"}])
+            buttons.append([{"text": get_text('join', lang), "callback_data": f"join_task_{task_id}"}])
         else:
-            buttons.append([{"text": "✅ Tamamladım", "callback_data": f"complete_task_{task_id}"}])
+            buttons.append([{"text": get_text('completed', lang), "callback_data": f"complete_task_{task_id}"}])
         
         buttons.append([
-            {"text": "🔙 Geri", "callback_data": f"task_type_{task['type']}"},
-            {"text": "🏠 Ana Menü", "callback_data": "main_menu"}
+            {"text": get_text('back', lang), "callback_data": f"task_type_{task['type']}"},
+            {"text": get_text('home', lang), "callback_data": "main_menu"}
         ])
         
         send_msg(user_id, text, buttons)
@@ -650,34 +873,26 @@ Aşağıdaki görevlerden birini seç:
         
         task = task_doc.to_dict()
         
-        # Üyelik kontrolü (kanal/grup için)
         if task["type"] in ["kanal", "grup"]:
             channel_username = task["target_link"].replace("https://t.me/", "").replace("@", "")
             if not check_member(channel_username, user_id):
                 answer_callback(callback_id, f"❌ Önce @{channel_username} katılmalısın!", True)
                 return
         
-        # Katılım kaydı
         if add_task_participant(user_id, task_id):
-            text = f"""
-✅ <b>Göreve Katıldın!</b>
-
-🎯 {task['title']}
-💰 <b>Ödül:</b> <code>${task['reward']:.4f}</code>
-
-📋 <b>Şimdi şunları yap:</b>
-1. Linke tıkla: {task['target_link']}
-2. Talimatları uygula
-3. Tamamladığında 'Tamamladım' butonuna bas
-
-⏳ <b>Süre:</b> 24 saat
-            """
+            user = get_user(user_id)
+            lang = user.get("language", "tr") if user else "tr"
+            
+            text = get_text('task_joined', lang, 
+                          title=task['title'],
+                          reward=task['reward'],
+                          link=task['target_link'])
             
             buttons = [[
                 {"text": "🔗 Linke Git", "url": task['target_link']},
-                {"text": "✅ Tamamladım", "callback_data": f"complete_task_{task_id}"}
+                {"text": get_text('completed', lang), "callback_data": f"complete_task_{task_id}"}
             ], [
-                {"text": "🔙 Görevlere Dön", "callback_data": f"task_type_{task['type']}"}
+                {"text": get_text('back', lang), "callback_data": f"task_type_{task['type']}"}
             ]]
             
             answer_callback(callback_id, "✅ Göreve katıldın!")
@@ -686,41 +901,17 @@ Aşağıdaki görevlerden birini seç:
             answer_callback(callback_id, "❌ Zaten katıldın!", True)
     
     def complete_task(self, user_id, task_id, callback_id):
-        task_doc = db.collection("tasks").document(task_id).get()
-        if not task_doc.exists:
-            answer_callback(callback_id, "❌ Görev bulunamadı!", True)
-            return
-        
-        task = task_doc.to_dict()
-        
-        if task["type"] == "post":
-            # Post görevi için proof bekliyoruz
-            self.user_states[user_id] = {
-                "action": "waiting_post_proof",
-                "task_id": task_id
-            }
-            
-            answer_callback(callback_id, "📸 Şimdi kanıt fotoğrafını gönder!")
-            send_msg(user_id, "📸 <b>Post Görevi Kanıtı</b>\n\nLike/beğenme veya yorumunun ekran görüntüsünü gönder:")
-            return
-        
-        # Diğer görev türleri için otomatik onay
         reward = complete_task_participation(user_id, task_id)
         
         if reward:
-            text = f"""
-🎉 <b>Görev Tamamlandı!</b>
-
-🎯 {task['title']}
-💰 <b>Kazanç:</b> <code>${reward:.4f}</code>
-✅ <b>Bakiyene eklendi!</b>
-
-<i>Yeni görevler için görevlere dön.</i>
-            """
+            user = get_user(user_id)
+            lang = user.get("language", "tr") if user else "tr"
+            
+            text = get_text('task_completed', lang, reward=reward)
             
             buttons = [[
-                {"text": "🎯 Yeni Görev", "callback_data": "refresh_tasks"},
-                {"text": "💰 Bakiye", "callback_data": "show_balance"}
+                {"text": get_text('menu_tasks', lang), "callback_data": "refresh_tasks"},
+                {"text": get_text('menu_balance', lang), "callback_data": "start_deposit"}
             ]]
             
             answer_callback(callback_id, f"✅ ${reward:.4f} kazandın!")
@@ -728,226 +919,133 @@ Aşağıdaki görevlerden birini seç:
         else:
             answer_callback(callback_id, "❌ Görev tamamlanamadı!", True)
     
-    def process_post_proof(self, user_id, msg):
+    # 📝 POST GÖREV OLUŞTURMA
+    def start_post_task(self, user_id, lang='tr'):
+        self.user_states[user_id] = {"action": "waiting_post_image", "lang": lang}
+        
+        if lang == 'tr':
+            text = """
+➕ <b>POST GÖREVİ OLUŞTUR</b>
+
+1️⃣ <b>Adım:</b> Post görselini gönder
+<i>(Fotoğraf veya video)</i>
+
+❌ İptal için: /cancel
+            """
+        else:
+            text = """
+➕ <b>CREATE POST TASK</b>
+
+1️⃣ <b>Step:</b> Send post image
+<i>(Photo or video)</i>
+
+❌ Cancel: /cancel
+            """
+        
+        send_msg(user_id, text)
+    
+    def process_post_image(self, user_id, msg):
         if user_id not in self.user_states:
             return
         
         state = self.user_states[user_id]
-        task_id = state.get("task_id")
+        lang = state.get("lang", "tr")
         
-        # Fotoğraf kontrolü
-        if "photo" not in msg:
-            send_msg(user_id, "❌ Lütfen ekran görüntüsü (fotoğraf) gönder!")
-            return
-        
-        # En büyük boyutlu fotoğrafı al
-        photo = msg["photo"][-1]["file_id"]
-        
-        # Görevi tamamla
-        reward = complete_task_participation(user_id, task_id, photo)
-        
-        if reward:
-            # State'i temizle
-            del self.user_states[user_id]
-            
-            text = f"""
-🎉 <b>Post Görevi Tamamlandı!</b>
-
-📸 <b>Kanıt onaylandı</b>
-💰 <b>Kazanç:</b> <code>${reward:.4f}</code>
-✅ <b>Bakiyene eklendi!</b>
-            """
-            
-            send_msg(user_id, text)
+        if "photo" in msg:
+            photo = msg["photo"][-1]["file_id"]
+        elif "video" in msg:
+            photo = msg["video"]["file_id"]
         else:
-            send_msg(user_id, "❌ Görev tamamlanamadı!")
-    
-    # ➕ GÖREV OLUŞTURMA
-    def start_create_task(self, user_id):
-        text = """
-➕ <b>Görev Oluştur</b>
-
-Hangi tür görev oluşturmak istersin?
-        """
-        
-        buttons = [[
-            {"text": "📢 Kanal", "callback_data": "create_kanal"},
-            {"text": "👥 Grup", "callback_data": "create_grup"}
-        ], [
-            {"text": "📝 Post", "callback_data": "create_post"},
-            {"text": "🤖 Bot", "callback_data": "create_bot"}
-        ], [
-            {"text": "❌ İptal", "callback_data": "main_menu"}
-        ]]
-        
-        send_msg(user_id, text, buttons)
-    
-    def process_task_type(self, user_id, text):
-        task_types = {"kanal": "📢 Kanal", "grup": "👥 Grup", "post": "📝 Post", "bot": "🤖 Bot"}
-        
-        if text not in task_types:
-            send_msg(user_id, "❌ Geçersiz görev türü! Lütfen listeden seç.")
-            return
-        
-        task_type = [k for k, v in task_types.items() if v == text][0]
-        
-        self.user_states[user_id] = {
-            "action": "waiting_task_link",
-            "task_type": task_type
-        }
-        
-        examples = {
-            "kanal": "@kanal_username",
-            "grup": "@grup_username veya grup linki",
-            "post": "post linki (t.me/kanal/123)",
-            "bot": "@bot_username"
-        }
-        
-        send_msg(user_id, f"🔗 <b>{task_types[text]} Görev Linki</b>\n\nLinki gönder:\n<i>Örnek: {examples[task_type]}</i>")
-    
-    def process_task_link(self, user_id, text):
-        if text.lower() == "iptal":
-            if user_id in self.user_states:
-                del self.user_states[user_id]
-            send_msg(user_id, "❌ İptal edildi.")
+            send_msg(user_id, "❌ Lütfen fotoğraf veya video gönder!")
             return
         
         self.user_states[user_id] = {
-            "action": "waiting_task_title",
-            "task_type": self.user_states[user_id]["task_type"],
-            "link": text
+            "action": "waiting_post_title",
+            "image_url": photo,
+            "lang": lang
         }
         
-        send_msg(user_id, "📝 <b>Görev Başlığı</b>\n\nGörev için kısa başlık yaz:\n<i>Örnek: Kanalımıza Katılın!</i>")
-    
-    def process_task_title(self, user_id, text):
-        if text.lower() == "iptal":
-            if user_id in self.user_states:
-                del self.user_states[user_id]
-            send_msg(user_id, "❌ İptal edildi.")
-            return
-        
-        self.user_states[user_id] = {
-            "action": "waiting_task_budget",
-            "task_type": self.user_states[user_id]["task_type"],
-            "link": self.user_states[user_id]["link"],
-            "title": text
-        }
-        
-        user = get_user(user_id)
-        balance = user.get("balance", 0)
-        
-        send_msg(user_id, f"💰 <b>Görev Bütçesi</b>\n\nNe kadar bütçe ayırmak istersin?\n\n💰 <b>Mevcut bakiye:</b> <code>${balance:.4f}</code>\n\n<i>Sayı gönder (Örnek: 0.05)</i>")
-    
-    def process_task_budget(self, user_id, text):
-        try:
-            budget = float(text)
-            if budget <= 0:
-                send_msg(user_id, "❌ Geçersiz miktar!")
-                return
-        except:
-            send_msg(user_id, "❌ Geçersiz miktar! Sayı gönder.")
-            return
-        
-        state = self.user_states[user_id]
-        
-        # Görevi oluştur
-        task_id, result = create_task_from_user(
-            creator_id=user_id,
-            task_type=state["task_type"],
-            title=state["title"],
-            target_link=state["link"],
-            budget=budget
-        )
-        
-        # State'i temizle
-        del self.user_states[user_id]
-        
-        if task_id:
-            text = f"""
-✅ <b>Görev Oluşturuldu!</b>
-
-🎯 {state['title']}
-🔗 {state['link']}
-💰 <b>Bütçe:</b> <code>${budget:.4f}</code>
-👥 <b>Katılım:</b> 0/10
-🆔 <code>{task_id[:8]}...</code>
-
-<i>Görevler listesinde görünecek.</i>
+        if lang == 'tr':
+            text = """
+2️⃣ <b>Adım:</b> Post başlığını yaz
+<i>(Örnek: Yeni Ürünümüzü Beğenin!)</i>
             """
-            
-            # Admin bildirimi
-            if str(user_id) != ADMIN_ID:
-                send_msg(ADMIN_ID, f"➕ <b>Yeni Görev Oluşturuldu</b>\n\nKullanıcı: {user_id}\nGörev: {state['title']}\nBütçe: ${budget:.4f}")
         else:
-            text = f"❌ <b>Hata:</b> {result}"
+            text = """
+2️⃣ <b>Step:</b> Write post title
+<i>(Example: Like Our New Product!)</i>
+            """
         
         send_msg(user_id, text)
     
     # 💰 BAKİYE
-    def show_balance(self, user_id):
+    def show_balance(self, user_id, lang='tr'):
         user = get_user(user_id)
         if not user:
             return
         
-        text = f"""
-💰 <b>Bakiye Durumu</b>
-━━━━━━━━━━━━━━━━
-💵 <b>Mevcut:</b> <code>${user.get('balance', 0):.4f}</code>
-━━━━━━━━━━━━━━━━
-
-🎯 <b>Toplam Görev:</b> {user.get('tasks_completed', 0)}
-📈 <b>Toplam Kazanç:</b> <code>${user.get('total_earned', 0):.4f}</code>
-
-💡 <b>Minimum Çekim:</b> <code>${MIN_WITHDRAW}</code>
-        """
+        text = get_text('balance_title', lang,
+                       balance=user.get('balance', 0),
+                       tasks=user.get('tasks_completed', 0),
+                       earned=user.get('total_earned', 0),
+                       ref_bonus=user.get('total_ref_bonus', 0),
+                       min_withdraw=MIN_WITHDRAW)
         
         buttons = [[
-            {"text": "💳 Yükle", "callback_data": "start_deposit"},
-            {"text": "🏧 Çek", "callback_data": "start_withdraw"}
+            {"text": get_text('menu_deposit', lang), "callback_data": "start_deposit"},
+            {"text": get_text('menu_withdraw', lang), "callback_data": "start_withdraw"}
         ], [
-            {"text": "🎯 Görevler", "callback_data": "refresh_tasks"},
-            {"text": "🏠 Ana Menü", "callback_data": "main_menu"}
+            {"text": get_text('menu_tasks', lang), "callback_data": "refresh_tasks"},
+            {"text": get_text('home', lang), "callback_data": "main_menu"}
         ]]
         
         send_msg(user_id, text, buttons)
     
-    def start_deposit(self, user_id):
-        text = f"""
+    def show_deposit(self, user_id, lang='tr'):
+        if lang == 'tr':
+            text = f"""
 💳 <b>Bakiye Yükle</b>
 
 ℹ️ <b>Manuel yükleme:</b>
 👉 {SUPPORT_USERNAME}
 
 💰 <b>Bize yaz, hızlıca yükleyelim!</b>
+            """
+        else:
+            text = f"""
+💳 <b>Deposit</b>
 
-<i>Minimum: $0.01</i>
-        """
+ℹ️ <b>Manual deposit:</b>
+👉 {SUPPORT_USERNAME}
+
+💰 <b>Contact us, we'll deposit quickly!</b>
+            """
         
         buttons = [[
             {"text": "📞 Destek", "url": f"https://t.me/{SUPPORT_USERNAME[1:]}"}
         ], [
-            {"text": "💰 Bakiye", "callback_data": "show_balance"},
-            {"text": "🏠 Ana Menü", "callback_data": "main_menu"}
+            {"text": get_text('menu_balance', lang), "callback_data": "start_deposit"},
+            {"text": get_text('home', lang), "callback_data": "main_menu"}
         ]]
         
         send_msg(user_id, text, buttons)
     
-    def start_withdraw(self, user_id):
+    def show_withdraw(self, user_id, lang='tr'):
         user = get_user(user_id)
         balance = user.get("balance", 0)
         
-        if balance < MIN_WITHDRAW:
-            text = f"""
+        if lang == 'tr':
+            if balance < MIN_WITHDRAW:
+                text = f"""
 🏧 <b>Para Çekme</b>
 
 ❌ <b>Bakiye Yetersiz!</b>
 
 💰 <b>Mevcut:</b> <code>${balance:.4f}</code>
 📊 <b>Gerekli:</b> <code>${MIN_WITHDRAW}</code>
-            """
-        else:
-            text = f"""
+                """
+            else:
+                text = f"""
 🏧 <b>Para Çekme</b>
 
 ✅ <b>Çekim Yapılabilir!</b>
@@ -957,99 +1055,80 @@ Hangi tür görev oluşturmak istersin?
 
 ℹ️ <b>Destek ile iletişime geç:</b>
 👉 {SUPPORT_USERNAME}
+                """
+        else:
+            if balance < MIN_WITHDRAW:
+                text = f"""
+🏧 <b>Withdraw</b>
 
-<i>TRX adresinizi gönderin.</i>
-            """
+❌ <b>Insufficient Balance!</b>
+
+💰 <b>Current:</b> <code>${balance:.4f}</code>
+📊 <b>Required:</b> <code>${MIN_WITHDRAW}</code>
+                """
+            else:
+                text = f"""
+🏧 <b>Withdraw</b>
+
+✅ <b>Withdrawal Available!</b>
+
+💰 <b>Current:</b> <code>${balance:.4f}</code>
+📊 <b>Minimum:</b> <code>${MIN_WITHDRAW}</code>
+
+ℹ️ <b>Contact support:</b>
+👉 {SUPPORT_USERNAME}
+                """
         
         buttons = [[
             {"text": "📞 Destek", "url": f"https://t.me/{SUPPORT_USERNAME[1:]}"}
         ], [
-            {"text": "💰 Bakiye", "callback_data": "show_balance"},
-            {"text": "🎯 Görevler", "callback_data": "refresh_tasks"}
+            {"text": get_text('menu_balance', lang), "callback_data": "start_deposit"},
+            {"text": get_text('menu_tasks', lang), "callback_data": "refresh_tasks"}
         ], [
-            {"text": "🏠 Ana Menü", "callback_data": "main_menu"}
+            {"text": get_text('home', lang), "callback_data": "main_menu"}
         ]]
         
         send_msg(user_id, text, buttons)
     
     # 👥 REFERANS
-    def show_referral(self, user_id):
+    def show_referral(self, user_id, lang='tr'):
         user = get_user(user_id)
         if not user:
             return
         
         ref_code = user.get("referral_code", "N/A")
         ref_link = f"https://t.me/{BOT_USERNAME}?start={ref_code}"
+        ref_count = get_ref_count(user_id)
+        total_bonus = ref_count * REF_BONUS
+        level = get_ref_level(ref_count, lang)
         
-        # Referans sayısı
-        refs = db.collection("users").where("referred_by", "==", user_id).stream()
-        ref_count = len(list(refs))
-        
-        text = f"""
-👥 <b>Referans Sistemi</b>
-━━━━━━━━━━━━━━━━
-👤 <b>Referansların:</b> <code>{ref_count}</code>
-💰 <b>Toplam Bonus:</b> <code>${ref_count * REF_BONUS:.4f}</code>
-━━━━━━━━━━━━━━━━
-
-🎁 <b>Her referans:</b> <code>${REF_BONUS}</code>
-💸 <b>Görev komisyonu:</b> %25
-
-🔗 <b>Referans Linkin:</b>
-<code>{ref_link}</code>
-
-📋 <b>Referans Kodun:</b>
-<code>{ref_code}</code>
-        """
+        text = get_text('referral_title', lang,
+                       ref_count=ref_count,
+                       total_bonus=total_bonus,
+                       level=level,
+                       ref_bonus=REF_BONUS,
+                       ref_link=ref_link,
+                       ref_code=ref_code)
         
         buttons = [[
-            {"text": "📋 Linki Kopyala", "callback_data": "copy_ref"}
+            {"text": get_text('copy_ref', lang), "callback_data": "copy_ref"}
         ], [
-            {"text": "💰 Bakiye", "callback_data": "show_balance"},
-            {"text": "🎯 Görevler", "callback_data": "refresh_tasks"}
+            {"text": get_text('menu_balance', lang), "callback_data": "start_deposit"},
+            {"text": get_text('menu_tasks', lang), "callback_data": "refresh_tasks"}
         ], [
-            {"text": "🏠 Ana Menü", "callback_data": "main_menu"}
-        ]]
-        
-        send_msg(user_id, text, buttons)
-    
-    def get_ref_count(self, user_id):
-        refs = db.collection("users").where("referred_by", "==", user_id).stream()
-        return len(list(refs))
-    
-    # 📢 REKLAMLAR
-    def show_ads(self, user_id):
-        text = """
-📢 <b>Reklam Sistemi</b>
-
-✨ <b>Özellikler:</b>
-• Kendi reklamını oluştur
-• İzleyerek para kazan
-• Bütçeni yönet
-• Detaylı istatistikler
-
-<i>Yakında aktif!</i>
-        """
-        
-        buttons = [[
-            {"text": "💰 Bakiye", "callback_data": "show_balance"},
-            {"text": "🎯 Görevler", "callback_data": "refresh_tasks"}
-        ], [
-            {"text": "🏠 Ana Menü", "callback_data": "main_menu"}
+            {"text": get_text('home', lang), "callback_data": "main_menu"}
         ]]
         
         send_msg(user_id, text, buttons)
     
     # 👑 ADMIN PANEL
     def show_admin_panel(self, admin_id):
-        # İstatistikler
         users = db.collection("users").stream()
         user_count = len(list(users))
         
         tasks = db.collection("tasks").where("status", "==", "active").stream()
         task_count = len(list(tasks))
         
-        # Toplam bakiye
         total_balance = 0
         for user in db.collection("users").stream():
             total_balance += user.to_dict().get("balance", 0)
@@ -1057,62 +1136,15 @@ Hangi tür görev oluşturmak istersin?
         text = f"""
 👑 <b>ADMIN PANEL</b>
 ━━━━━━━━━━━━━━━━
-👥 <b>Kullanıcılar:</b> {user_count}
-🎯 <b>Aktif Görev:</b> {task_count}
-💰 <b>Toplam Bakiye:</b> ${total_balance:.2f}
+👥 <b>Users:</b> {user_count}
+🎯 <b>Active Tasks:</b> {task_count}
+💰 <b>Total Balance:</b> ${total_balance:.2f}
 ━━━━━━━━━━━━━━━━
 
-<b>Komutlar:</b>
-• /addbalance USER_ID AMOUNT
-• /createtask TYPE LINK TITLE
-• /stats - Detaylı istatistik
-• /broadcast MESAJ - Duyuru yap
-        """
-        
-        send_msg(admin_id, text)
-    
-    def admin_add_balance(self, text):
-        try:
-            parts = text.split()
-            if len(parts) < 3:
-                return
-            
-            target_id = parts[1]
-            amount = float(parts[2])
-            
-            if update_balance(int(target_id), amount, "admin_add"):
-                send_msg(ADMIN_ID, f"✅ Bakiye eklendi!\nKullanıcı: {target_id}\nMiktar: ${amount}")
-                send_msg(int(target_id), f"🎉 Admin bakiyene ${amount:.4f} ekledi!")
-        except:
-            pass
-    
-    def admin_stats(self, admin_id):
-        # Detaylı istatistikler
-        users = db.collection("users").stream()
-        
-        today = datetime.now().date()
-        new_today = 0
-        active_today = 0
-        
-        for user in users:
-            user_data = user.to_dict()
-            created = datetime.fromisoformat(user_data.get("created_at", "")).date()
-            last_active = datetime.fromisoformat(user_data.get("last_active", "")).date()
-            
-            if created == today:
-                new_today += 1
-            
-            if last_active == today:
-                active_today += 1
-        
-        text = f"""
-📊 <b>Detaylı İstatistikler</b>
-━━━━━━━━━━━━━━━━
-👥 <b>Toplam Kullanıcı:</b> {len(list(db.collection("users").stream()))}
-🆕 <b>Bugün Kayıt:</b> {new_today}
-🟢 <b>Bugün Aktif:</b> {active_today}
-🎯 <b>Aktif Görev:</b> {len(list(db.collection("tasks").where("status", "==", "active").stream()))}
-━━━━━━━━━━━━━━━━
+<b>Commands:</b>
+• /broadcast MESSAGE
+• /addbalance ID AMOUNT
+• /stats - Details
         """
         
         send_msg(admin_id, text)
@@ -1133,8 +1165,9 @@ def webhook():
 
 @app.route('/setwebhook')
 def set_webhook():
-    if WEBHOOK_URL:
-        url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}/webhook"
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    if webhook_url:
+        url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={webhook_url}/webhook"
         r = requests.get(url).json()
         return r
     return "WEBHOOK_URL gerekli"
