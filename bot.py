@@ -798,6 +798,10 @@ class Database:
                 ORDER BY created_at DESC
             ''')
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_all_tasks(self):
+        self.cursor.execute('SELECT * FROM tasks ORDER BY created_at DESC')
+        return [dict(row) for row in self.cursor.fetchall()]
     
     def complete_task(self, user_id, task_id, proof_url=None):
         """Görevi tamamla (otomatik onay)"""
@@ -996,7 +1000,24 @@ class TaskizBot:
         self.db = Database()
         self.user_states = {}  # EKSİK OLAN SATIR - EKLENDİ
         self.firebase = FirebaseClient()
+        if self.firebase.enabled:
+            self.sync_tasks_to_firebase()
         print(f"🤖 {BOT_NAME} başlatıldı!")
+
+    def sync_tasks_to_firebase(self):
+        tasks = self.db.get_all_tasks()
+        for task in tasks:
+            self.firebase.upsert('tasks', task['id'], {
+                'title': task['title'],
+                'description': task['description'],
+                'reward': task['reward'],
+                'max_participants': task['max_participants'],
+                'current_participants': task['current_participants'],
+                'status': task['status'],
+                'task_type': task['task_type'],
+                'created_by': task['created_by'],
+                'created_at': str(task['created_at'])
+            })
 
     def enforce_mandatory_channels(self, user_id, lang='tr'):
         """Zorunlu kanal kontrolü"""
@@ -2875,6 +2896,18 @@ ref = db.reference("/")
             task_id = self.db.admin_create_task(title, description, reward, max_parts, task_type, admin_id)
             
             if task_id:
+                if self.firebase.enabled:
+                    self.firebase.upsert('tasks', task_id, {
+                        'title': title,
+                        'description': description,
+                        'reward': reward,
+                        'max_participants': max_parts,
+                        'current_participants': 0,
+                        'status': 'active',
+                        'task_type': task_type,
+                        'created_by': admin_id,
+                        'created_at': datetime.utcnow().isoformat()
+                    })
                 send_message(admin_id, f"""
 ✅ Görev oluşturuldu!
 
@@ -2962,6 +2995,14 @@ Lütfen yüklemek istediğiniz tutarı gönderin.
             VALUES (?, ?, 'deposit', ?)
         ''', (user_id, amount, f"Otomatik deposit: {txid}"))
         self.db.connection.commit()
+        if self.firebase.enabled:
+            self.firebase.add('deposits', {
+                'user_id': user_id,
+                'amount': amount,
+                'txid': txid,
+                'status': 'approved',
+                'created_at': datetime.utcnow().isoformat()
+            })
 
         try:
             send_message(STATS_CHANNEL, f"""
