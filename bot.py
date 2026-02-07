@@ -1,4 +1,4 @@
-# bot.py
+# bot.py - GÜNCELLENMİŞ VERSİYON
 import os
 import json
 import requests
@@ -71,6 +71,8 @@ LANGUAGES = {
             # Mesajlar
             'task_joined': '✅ <b>Göreve Katıldın!</b>\n\n🎯 {title}\n💰 <b>Ödül:</b> <code>${reward:.4f}</code>\n\n📋 <b>Şimdi şunları yap:</b>\n1. Linke tıkla: {link}\n2. Talimatları uygula\n3. Tamamladığında butona bas\n\n⏳ <b>Süre:</b> 24 saat',
             'task_completed': '🎉 <b>Görev Tamamlandı!</b>\n\n💰 <b>Kazanç:</b> <code>${reward:.4f}</code>\n✅ <b>Bakiyene eklendi!</b>\n\n<i>Yeni görevler için görevlere dön.</i>',
+            'withdrawal_notice': '🏧 <b>Çekim Talebi Bildirimi</b>\n\nℹ️ <b>Henüz bakiye toplamadık!</b>\n\n📢 Reklam verenler olur ise bu bölüm aktif olacaktır.\n\n<i>Lütfen daha sonra tekrar deneyin.</i>',
+            'payment_active_notice': '✅ <b>Ödeme Sistemi Aktif!</b>\n\n💰 Artık bakiye çekimi yapabilirsiniz.',
             
             # Zorunlu kanal
             'channel_check': '🚫 <b>Zorunlu Kanal Kontrolü</b>\n\nDevam etmek için kanallara katıl:\n{channels}\n\n✅ Katıldıktan sonra <b>Kontrol Et</b> butonuna bas.',
@@ -123,6 +125,8 @@ LANGUAGES = {
             # Messages
             'task_joined': '✅ <b>Task Joined!</b>\n\n🎯 {title}\n💰 <b>Reward:</b> <code>${reward:.4f}</code>\n\n📋 <b>Now do this:</b>\n1. Click link: {link}\n2. Follow instructions\n3. Click button when done\n\n⏳ <b>Time:</b> 24 hours',
             'task_completed': '🎉 <b>Task Completed!</b>\n\n💰 <b>Earned:</b> <code>${reward:.4f}</code>\n✅ <b>Added to balance!</b>\n\n<i>Return to tasks for more.</i>',
+            'withdrawal_notice': '🏧 <b>Withdrawal Notice</b>\n\nℹ️ <b>We haven\'t collected balance yet!</b>\n\n📢 This section will be active when we have advertisers.\n\n<i>Please try again later.</i>',
+            'payment_active_notice': '✅ <b>Payment System Active!</b>\n\n💰 You can now withdraw your balance.',
             
             # Channel check
             'channel_check': '🚫 <b>Mandatory Channel Check</b>\n\nJoin these channels to continue:\n{channels}\n\n✅ After joining, tap <b>Check</b> button.',
@@ -146,6 +150,8 @@ TASK_REWARDS = {
 MIN_WITHDRAW = 0.30
 REF_BONUS = 0.005
 TASK_COMMISSION = 0.25
+PAYMENT_SYSTEM_ACTIVE = False  # Ödeme sistemi başlangıçta kapalı
+PAYMENT_POOL = 0.0  # Bakiye havuzu
 
 # 📢 ZORUNLU KANALLAR
 MANDATORY_CHANNELS = [
@@ -267,7 +273,16 @@ def enforce_channels(user_id, lang='tr'):
     send_msg(user_id, text, buttons)
     return False
 
-# 🗄️ FIREBASE FONKSİYONLARI
+# 🗄️ FIREBASE FONKSİYONLARI - GÜNCELLENDİ
+def generate_unique_ref_code():
+    """Benzersiz referans kodu oluştur"""
+    while True:
+        ref_code = str(uuid.uuid4())[:8].upper()
+        # Aynı kod var mı kontrol et
+        docs = db.collection("users").where("referral_code", "==", ref_code).limit(1).stream()
+        if not list(docs):
+            return ref_code
+
 def get_user(user_id):
     doc = db.collection("users").document(str(user_id)).get()
     if doc.exists:
@@ -275,7 +290,7 @@ def get_user(user_id):
     return None
 
 def create_user(user_id, username, first_name, last_name, referred_by=None, lang='tr'):
-    ref_code = str(uuid.uuid4())[:8].upper()
+    ref_code = generate_unique_ref_code()  # Güncellendi
     
     user_data = {
         "user_id": user_id,
@@ -457,23 +472,38 @@ def complete_task_participation(user_id, task_id, proof_url=None):
     
     return reward
 
-def create_task_from_user(creator_id, task_data):
-    user = get_user(creator_id)
-    if not user:
-        return None, "User not found"
-    
-    budget = task_data.get("budget", 0)
-    if user.get("balance", 0) < budget:
-        return None, "Insufficient balance"
-    
-    update_balance(creator_id, -budget, "create_task")
-    
-    task_ref = db.collection("tasks").add(task_data)
-    task_id = task_ref[1].id
-    
-    rtdb.child("tasks").child(task_id).set(task_data)
-    
-    return task_id, "Success"
+def delete_task(task_id):
+    """Görevi ve ilgili tüm verileri sil"""
+    try:
+        # Task participants'ı sil
+        participants = db.collection("task_participants").where("task_id", "==", task_id).stream()
+        for participant in participants:
+            participant.reference.delete()
+        
+        # Task'i sil
+        db.collection("tasks").document(task_id).delete()
+        
+        # Realtime DB'den sil
+        rtdb.child("tasks").child(task_id).delete()
+        
+        return True
+    except Exception as e:
+        print(f"Silme hatası: {e}")
+        return False
+
+def update_payment_pool(amount):
+    """Bakiye havuzunu güncelle"""
+    global PAYMENT_POOL
+    PAYMENT_POOL += amount
+    rtdb.child("system").child("payment_pool").set(PAYMENT_POOL)
+    return PAYMENT_POOL
+
+def toggle_payment_system(status):
+    """Ödeme sistemini aç/kapa"""
+    global PAYMENT_SYSTEM_ACTIVE
+    PAYMENT_SYSTEM_ACTIVE = status
+    rtdb.child("system").child("payment_active").set(status)
+    return PAYMENT_SYSTEM_ACTIVE
 
 # 📢 BİLDİRİM FONKSİYONLARI
 def notify_channel(text):
@@ -509,11 +539,27 @@ def notify_new_user(user_id, username, first_name, referred_by=None):
     """
     notify_channel(text)
 
-# 🎯 BOT SINIFI
+# 🎯 BOT SINIFI - GÜNCELLENDİ
 class TaskizBot:
     def __init__(self):
         self.user_states = {}
+        self.load_payment_settings()
         print("🤖 TaskizBot aktif!")
+    
+    def load_payment_settings(self):
+        """Ödeme ayarlarını yükle"""
+        global PAYMENT_SYSTEM_ACTIVE, PAYMENT_POOL
+        try:
+            # Realtime DB'den ayarları yükle
+            payment_active = rtdb.child("system").child("payment_active").get()
+            payment_pool = rtdb.child("system").child("payment_pool").get()
+            
+            if payment_active is not None:
+                PAYMENT_SYSTEM_ACTIVE = payment_active
+            if payment_pool is not None:
+                PAYMENT_POOL = payment_pool
+        except:
+            pass
     
     def handle_update(self, update):
         if "message" in update:
@@ -525,26 +571,28 @@ class TaskizBot:
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
         
-        # 🎯 START komutu
+        # 🎯 START komutu - DÜZELTİLDİ
         if text.startswith("/start"):
-            parts = text.split()
-            referred_by = None
-            
-            if len(parts) > 1:
-                ref_code = parts[1]
-                docs = db.collection("users").where("referral_code", "==", ref_code).limit(1).stream()
-                for doc in docs:
-                    referred_by = doc.to_dict()["user_id"]
-                    break
-            
+            # Önce dil kontrolü yap
             user = get_user(user_id)
             
             if not user:
+                # Yeni kullanıcı - önce dil seçimi
+                parts = text.split()
+                referred_by = None
+                
+                if len(parts) > 1:
+                    ref_code = parts[1]
+                    docs = db.collection("users").where("referral_code", "==", ref_code).limit(1).stream()
+                    for doc in docs:
+                        referred_by = doc.to_dict()["user_id"]
+                        break
+                
                 username = msg["from"].get("username", "")
                 first_name = msg["from"].get("first_name", "")
                 last_name = msg["from"].get("last_name", "")
                 
-                # Önce dil seçimi göster
+                # Dil seçimi göster
                 show_language_selection(user_id)
                 
                 # State'e kaydet
@@ -555,22 +603,29 @@ class TaskizBot:
                     "last_name": last_name,
                     "referred_by": referred_by
                 }
-                return
-            
-            # Kullanıcı varsa dilini al
-            lang = user.get("language", "tr")
-            
-            # Zorunlu kanal kontrolü
-            if not enforce_channels(user_id, lang):
-                return
-            
-            self.show_main_menu(user_id, lang)
+            else:
+                # Mevcut kullanıcı
+                lang = user.get("language", "tr")
+                
+                # Zorunlu kanal kontrolü
+                if not enforce_channels(user_id, lang):
+                    return
+                
+                self.show_main_menu(user_id, lang)
             return
         
-        # 👑 ADMIN
+        # 👑 ADMIN KOMUTLARI
         if str(user_id) == ADMIN_ID and text.startswith("/"):
             if text == "/admin":
                 self.show_admin_panel(user_id)
+            elif text.startswith("/addbalance"):
+                self.admin_add_balance(text)
+            elif text.startswith("/togglepayment"):
+                self.admin_toggle_payment(text)
+            elif text.startswith("/addpool"):
+                self.admin_add_to_pool(text)
+            elif text.startswith("/delete"):
+                self.admin_delete_item(text)
             return
         
         # State kontrolü
@@ -623,7 +678,7 @@ class TaskizBot:
         callback_id = callback["id"]
         
         try:
-            # Dil seçimi
+            # Dil seçimi - DÜZELTİLDİ
             if data.startswith("lang_"):
                 lang = data.split("_")[1]
                 
@@ -720,6 +775,28 @@ class TaskizBot:
             elif data.startswith("complete_task_"):
                 task_id = data.split("_")[2]
                 self.complete_task(user_id, task_id, callback_id)
+            
+            elif data == "toggle_payment":
+                if str(user_id) == ADMIN_ID:
+                    new_status = not PAYMENT_SYSTEM_ACTIVE
+                    toggle_payment_system(new_status)
+                    status_text = "AÇIK" if new_status else "KAPALI"
+                    answer_callback(callback_id, f"✅ Ödeme sistemi {status_text}!")
+                    self.show_admin_panel(user_id)
+            
+            elif data == "add_to_pool":
+                if str(user_id) == ADMIN_ID:
+                    self.ask_pool_amount(user_id)
+                    answer_callback(callback_id)
+            
+            elif data.startswith("delete_task_"):
+                if str(user_id) == ADMIN_ID:
+                    task_id = data.split("_")[2]
+                    if delete_task(task_id):
+                        answer_callback(callback_id, "✅ Görev silindi!")
+                    else:
+                        answer_callback(callback_id, "❌ Silme hatası!")
+                    self.show_admin_panel(user_id)
             
             elif data == "cancel_action":
                 if user_id in self.user_states:
@@ -978,7 +1055,7 @@ class TaskizBot:
         
         send_msg(user_id, text)
     
-    # 💰 BAKİYE
+    # 💰 BAKİYE - GÜNCELLENDİ
     def show_balance(self, user_id, lang='tr'):
         user = get_user(user_id)
         if not user:
@@ -1034,59 +1111,72 @@ class TaskizBot:
         user = get_user(user_id)
         balance = user.get("balance", 0)
         
-        if lang == 'tr':
+        if not PAYMENT_SYSTEM_ACTIVE:
+            # Ödeme sistemi kapalı - BİLDİRİM göster
+            text = get_text('withdrawal_notice', lang)
+            
+            buttons = [[
+                {"text": get_text('menu_tasks', lang), "callback_data": "refresh_tasks"}
+            ], [
+                {"text": get_text('home', lang), "callback_data": "main_menu"}
+            ]]
+        else:
+            # Ödeme sistemi açık
             if balance < MIN_WITHDRAW:
-                text = f"""
+                if lang == 'tr':
+                    text = f"""
 🏧 <b>Para Çekme</b>
 
 ❌ <b>Bakiye Yetersiz!</b>
 
 💰 <b>Mevcut:</b> <code>${balance:.4f}</code>
 📊 <b>Gerekli:</b> <code>${MIN_WITHDRAW}</code>
-                """
-            else:
-                text = f"""
-🏧 <b>Para Çekme</b>
-
-✅ <b>Çekim Yapılabilir!</b>
-
-💰 <b>Mevcut:</b> <code>${balance:.4f}</code>
-📊 <b>Minimum:</b> <code>${MIN_WITHDRAW}</code>
-
-ℹ️ <b>Destek ile iletişime geç:</b>
-👉 {SUPPORT_USERNAME}
-                """
-        else:
-            if balance < MIN_WITHDRAW:
-                text = f"""
+                    """
+                else:
+                    text = f"""
 🏧 <b>Withdraw</b>
 
 ❌ <b>Insufficient Balance!</b>
 
 💰 <b>Current:</b> <code>${balance:.4f}</code>
 📊 <b>Required:</b> <code>${MIN_WITHDRAW}</code>
-                """
+                    """
             else:
-                text = f"""
+                if lang == 'tr':
+                    text = f"""
+🏧 <b>Para Çekme</b>
+
+✅ <b>Çekim Yapılabilir!</b>
+
+💰 <b>Mevcut:</b> <code>${balance:.4f}</code>
+📊 <b>Minimum:</b> <code>${MIN_WITHDRAW}</code>
+💰 <b>Bakiye Havuzu:</b> <code>${PAYMENT_POOL:.2f}</code>
+
+ℹ️ <b>Destek ile iletişime geç:</b>
+👉 {SUPPORT_USERNAME}
+                    """
+                else:
+                    text = f"""
 🏧 <b>Withdraw</b>
 
 ✅ <b>Withdrawal Available!</b>
 
 💰 <b>Current:</b> <code>${balance:.4f}</code>
 📊 <b>Minimum:</b> <code>${MIN_WITHDRAW}</code>
+💰 <b>Payment Pool:</b> <code>${PAYMENT_POOL:.2f}</code>
 
 ℹ️ <b>Contact support:</b>
 👉 {SUPPORT_USERNAME}
-                """
+                    """
         
-        buttons = [[
-            {"text": "📞 Destek", "url": f"https://t.me/{SUPPORT_USERNAME[1:]}"}
-        ], [
-            {"text": get_text('menu_balance', lang), "callback_data": "start_deposit"},
-            {"text": get_text('menu_tasks', lang), "callback_data": "refresh_tasks"}
-        ], [
-            {"text": get_text('home', lang), "callback_data": "main_menu"}
-        ]]
+            buttons = [[
+                {"text": "📞 Destek", "url": f"https://t.me/{SUPPORT_USERNAME[1:]}"}
+            ], [
+                {"text": get_text('menu_balance', lang), "callback_data": "start_deposit"},
+                {"text": get_text('menu_tasks', lang), "callback_data": "refresh_tasks"}
+            ], [
+                {"text": get_text('home', lang), "callback_data": "main_menu"}
+            ]]
         
         send_msg(user_id, text, buttons)
     
@@ -1097,6 +1187,12 @@ class TaskizBot:
             return
         
         ref_code = user.get("referral_code", "N/A")
+        if ref_code == "N/A":
+            # Yeniden oluştur
+            ref_code = generate_unique_ref_code()
+            db.collection("users").document(str(user_id)).update({"referral_code": ref_code})
+            rtdb.child("users").child(str(user_id)).update({"ref_code": ref_code})
+        
         ref_link = f"https://t.me/{BOT_USERNAME}?start={ref_code}"
         ref_count = get_ref_count(user_id)
         total_bonus = ref_count * REF_BONUS
@@ -1121,7 +1217,7 @@ class TaskizBot:
         
         send_msg(user_id, text, buttons)
     
-    # 👑 ADMIN PANEL
+    # 👑 ADMIN PANEL - GÜNCELLENDİ
     def show_admin_panel(self, admin_id):
         users = db.collection("users").stream()
         user_count = len(list(users))
@@ -1133,21 +1229,124 @@ class TaskizBot:
         for user in db.collection("users").stream():
             total_balance += user.to_dict().get("balance", 0)
         
+        payment_status = "✅ AÇIK" if PAYMENT_SYSTEM_ACTIVE else "❌ KAPALI"
+        
         text = f"""
 👑 <b>ADMIN PANEL</b>
 ━━━━━━━━━━━━━━━━
 👥 <b>Users:</b> {user_count}
 🎯 <b>Active Tasks:</b> {task_count}
 💰 <b>Total Balance:</b> ${total_balance:.2f}
+🏦 <b>Payment Pool:</b> ${PAYMENT_POOL:.2f}
+🚦 <b>Payment System:</b> {payment_status}
 ━━━━━━━━━━━━━━━━
 
 <b>Commands:</b>
 • /broadcast MESSAGE
-• /addbalance ID AMOUNT
-• /stats - Details
+• /addbalance USER_ID AMOUNT
+• /addpool AMOUNT (Bakiye havuzuna ekle)
+• /togglepayment (Aç/Kapa)
+• /delete task TASK_ID
+━━━━━━━━━━━━━━━━
         """
         
-        send_msg(admin_id, text)
+        buttons = [[
+            {"text": f"🔘 Ödeme Sistemi: {'AÇIK' if PAYMENT_SYSTEM_ACTIVE else 'KAPALI'}", 
+             "callback_data": "toggle_payment"}
+        ], [
+            {"text": "💰 Bakiye Havuzu Ekle", "callback_data": "add_to_pool"}
+        ], [
+            {"text": "🔄 Yenile", "callback_data": "admin_refresh"}
+        ]]
+        
+        # Aktif görevleri listele (silme butonlu)
+        active_tasks = list(db.collection("tasks").where("status", "==", "active").limit(5).stream())
+        if active_tasks:
+            buttons.append([{"text": "🎯 Aktif Görevler", "callback_data": "none"}])
+            for task in active_tasks:
+                task_data = task.to_dict()
+                buttons.append([{
+                    "text": f"❌ {task_data.get('title', 'Task')[:20]}...",
+                    "callback_data": f"delete_task_{task.id}"
+                }])
+        
+        send_msg(admin_id, text, buttons)
+    
+    def admin_add_balance(self, command_text):
+        """Admin bakiye ekleme"""
+        try:
+            parts = command_text.split()
+            if len(parts) != 3:
+                send_msg(ADMIN_ID, "❌ Kullanım: /addbalance USER_ID AMOUNT")
+                return
+            
+            user_id = parts[1]
+            amount = float(parts[2])
+            
+            if update_balance(user_id, amount, "admin_add"):
+                send_msg(ADMIN_ID, f"✅ {user_id} kullanıcısına ${amount:.4f} eklendi!")
+                
+                # Kullanıcıya bildir
+                user = get_user(user_id)
+                if user:
+                    lang = user.get("language", "tr")
+                    if lang == 'tr':
+                        send_msg(user_id, f"💰 <b>Bakiye Eklendi!</b>\n\nAdmin tarafından hesabınıza <code>${amount:.4f}</code> eklendi!")
+                    else:
+                        send_msg(user_id, f"💰 <b>Balance Added!</b>\n\n<code>${amount:.4f}</code> added to your account by admin!")
+            else:
+                send_msg(ADMIN_ID, "❌ Kullanıcı bulunamadı!")
+        except:
+            send_msg(ADMIN_ID, "❌ Hata!")
+    
+    def admin_toggle_payment(self, command_text):
+        """Ödeme sistemini aç/kapa"""
+        global PAYMENT_SYSTEM_ACTIVE
+        new_status = not PAYMENT_SYSTEM_ACTIVE
+        toggle_payment_system(new_status)
+        
+        status_text = "AÇIK" if new_status else "KAPALI"
+        send_msg(ADMIN_ID, f"✅ Ödeme sistemi {status_text} yapıldı!")
+        
+        # Bildirim gönder
+        if new_status:
+            notify_channel("🎉 <b>ÖDEME SİSTEMİ AKTİF!</b>\n\nArtık bakiye çekimi yapabilirsiniz! 🏧")
+    
+    def admin_add_to_pool(self, command_text):
+        """Bakiye havuzuna ekle"""
+        try:
+            parts = command_text.split()
+            if len(parts) != 2:
+                send_msg(ADMIN_ID, "❌ Kullanım: /addpool AMOUNT")
+                return
+            
+            amount = float(parts[1])
+            new_pool = update_payment_pool(amount)
+            send_msg(ADMIN_ID, f"✅ Bakiye havuzuna ${amount:.2f} eklendi!\nYeni havuz: ${new_pool:.2f}")
+        except:
+            send_msg(ADMIN_ID, "❌ Hata!")
+    
+    def ask_pool_amount(self, user_id):
+        """Havuz miktarını sor"""
+        self.user_states[user_id] = {"action": "waiting_pool_amount"}
+        send_msg(user_id, "💰 <b>Bakiye Havuzuna Ekle</b>\n\nEklemek istediğiniz miktarı girin (örn: 3.00):")
+    
+    def admin_delete_item(self, command_text):
+        """Öğe sil"""
+        try:
+            parts = command_text.split()
+            if len(parts) < 3:
+                send_msg(ADMIN_ID, "❌ Kullanım: /delete task TASK_ID")
+                return
+            
+            if parts[1] == "task":
+                task_id = parts[2]
+                if delete_task(task_id):
+                    send_msg(ADMIN_ID, f"✅ Görev {task_id} silindi!")
+                else:
+                    send_msg(ADMIN_ID, "❌ Silme hatası!")
+        except:
+            send_msg(ADMIN_ID, "❌ Hata!")
 
 # 🚀 FLASK APP
 app = Flask(__name__)
