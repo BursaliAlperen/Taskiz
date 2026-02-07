@@ -349,10 +349,10 @@ class Database:
         count = self.cursor.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
         if count == 0:
             sample_tasks = [
-                ('Kanal Görevi', 'Belirtilen kanala katılın', 0.05, 1000, 'channel_join', 1),
-                ('Grup Görevi', 'Belirtilen gruba katılın', 0.05, 800, 'group_join', 1),
-                ('Post Görevi', 'Belirtilen postu beğen/yorum yap', 0.08, 500, 'post', 1),
-                ('Bot Görevi', 'Belirtilen botu başlat', 0.04, 600, 'bot_start', 1),
+                ('Kanal Görevi', 'Belirtilen kanala katılın', 0.0025, 10, 'channel_join', 1),
+                ('Grup Görevi', 'Belirtilen gruba katılın', 0.0015, 10, 'group_join', 1),
+                ('Post Görevi', 'Belirtilen postu beğen/yorum yap', 0.0005, 10, 'post', 1),
+                ('Bot Görevi', 'Belirtilen botu başlat', 0.001, 10, 'bot_start', 1),
             ]
             for task in sample_tasks:
                 self.cursor.execute('''
@@ -762,6 +762,14 @@ class Database:
         ''', (owner_id,))
         return [dict(row) for row in self.cursor.fetchall()]
 
+    def get_owner_ads(self, owner_id):
+        self.cursor.execute('''
+            SELECT * FROM ads
+            WHERE owner_id = ?
+            ORDER BY created_at DESC
+        ''', (owner_id,))
+        return [dict(row) for row in self.cursor.fetchall()]
+
     def get_ad_budget_summary(self, owner_id):
         self.cursor.execute('''
             SELECT COUNT(*) as active_ads, COALESCE(SUM(remaining_budget), 0) as remaining_budget
@@ -797,6 +805,10 @@ class Database:
                 AND current_participants < max_participants
                 ORDER BY created_at DESC
             ''')
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_all_tasks(self):
+        self.cursor.execute('SELECT * FROM tasks ORDER BY created_at DESC')
         return [dict(row) for row in self.cursor.fetchall()]
     
     def complete_task(self, user_id, task_id, proof_url=None):
@@ -996,7 +1008,24 @@ class TaskizBot:
         self.db = Database()
         self.user_states = {}  # EKSİK OLAN SATIR - EKLENDİ
         self.firebase = FirebaseClient()
+        if self.firebase.enabled:
+            self.sync_tasks_to_firebase()
         print(f"🤖 {BOT_NAME} başlatıldı!")
+
+    def sync_tasks_to_firebase(self):
+        tasks = self.db.get_all_tasks()
+        for task in tasks:
+            self.firebase.upsert('tasks', task['id'], {
+                'title': task['title'],
+                'description': task['description'],
+                'reward': task['reward'],
+                'max_participants': task['max_participants'],
+                'current_participants': task['current_participants'],
+                'status': task['status'],
+                'task_type': task['task_type'],
+                'created_by': task['created_by'],
+                'created_at': str(task['created_at'])
+            })
 
     def enforce_mandatory_channels(self, user_id, lang='tr'):
         """Zorunlu kanal kontrolü"""
@@ -1315,6 +1344,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             'inline_keyboard': [
                 [{'text': '📢 Post Reklam', 'callback_data': 'start_ad'}],
                 [{'text': '👁️ Reklam Görüntüle', 'callback_data': 'view_ad'}],
+                [{'text': '⏸️ Reklam Yönet', 'callback_data': 'ad_manage_list'}],
                 [{'text': '💱 Reklam Bakiye Dönüştür', 'callback_data': 'ad_refund_list'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
@@ -1322,6 +1352,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             'inline_keyboard': [
                 [{'text': '📢 Create Ad', 'callback_data': 'start_ad'}],
                 [{'text': '👁️ View Ad', 'callback_data': 'view_ad'}],
+                [{'text': '⏸️ Manage Ads', 'callback_data': 'ad_manage_list'}],
                 [{'text': '💱 Convert Ad Budget', 'callback_data': 'ad_refund_list'}],
                 [{'text': '🏠 Main Menu', 'callback_data': 'main_menu'}]
             ]
@@ -1386,7 +1417,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             return
 
         if user['balance'] < budget:
-            send_message(user_id, "❌ Yetersiz bakiye.")
+            send_message(user_id, "❌ Bakiye yetersiz. Depozit yap veya reklam bakiyeni çevir.")
             return
 
         poster = self.user_states[user_id]['poster']
@@ -1461,7 +1492,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         self.db.cursor.execute('''
             UPDATE ads
             SET remaining_budget = remaining_budget - ?,
-                status = CASE WHEN remaining_budget - ? <= 0 THEN 'completed' ELSE status END
+                status = CASE WHEN remaining_budget - ? <= 0 THEN 'paused' ELSE status END
             WHERE id = ?
         ''', (reward, reward, ad_id))
         self.db.connection.commit()
@@ -1505,6 +1536,46 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
                 'refunded_at': datetime.utcnow().isoformat()
             })
         answer_callback_query(callback_id, f"✅ İade edildi: ${refunded:.2f}", True)
+
+    def show_ad_manage_list(self, user_id, callback_id=None):
+        ads = self.db.get_owner_ads(user_id)
+        if not ads:
+            if callback_id:
+                answer_callback_query(callback_id, "📭 Reklam yok")
+            send_message(user_id, "📭 Reklam bulunamadı.")
+            return
+        keyboard = {'inline_keyboard': []}
+        for ad in ads[:10]:
+            status = ad['status']
+            label = "⏸️ Duraklat" if status == 'active' else "▶️ Devam Et"
+            action = f"ad_pause_{ad['id']}" if status == 'active' else f"ad_resume_{ad['id']}"
+            keyboard['inline_keyboard'].append([
+                {'text': f"#{ad['id']} {status} ${ad['remaining_budget']:.4f}", 'callback_data': action}
+            ])
+        keyboard['inline_keyboard'].append([{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}])
+        send_message(user_id, "⚙️ Reklam yönetimi:", reply_markup=keyboard)
+        if callback_id:
+            answer_callback_query(callback_id)
+
+    def handle_ad_pause(self, user_id, ad_id, callback_id):
+        self.db.cursor.execute('UPDATE ads SET status = ? WHERE id = ? AND owner_id = ?', ('paused', ad_id, user_id))
+        self.db.connection.commit()
+        if self.firebase.enabled:
+            self.firebase.upsert('ads', ad_id, {
+                'status': 'paused',
+                'paused_at': datetime.utcnow().isoformat()
+            })
+        answer_callback_query(callback_id, "⏸️ Duraklatıldı", True)
+
+    def handle_ad_resume(self, user_id, ad_id, callback_id):
+        self.db.cursor.execute('UPDATE ads SET status = ? WHERE id = ? AND owner_id = ?', ('active', ad_id, user_id))
+        self.db.connection.commit()
+        if self.firebase.enabled:
+            self.firebase.upsert('ads', ad_id, {
+                'status': 'active',
+                'resumed_at': datetime.utcnow().isoformat()
+            })
+        answer_callback_query(callback_id, "▶️ Devam etti", True)
     
     def handle_callback_query(self, callback_query):
         data = callback_query['data']
@@ -1595,6 +1666,17 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             elif data.startswith('ad_refund_'):
                 ad_id = int(data.split('_')[-1])
                 self.handle_ad_refund(user_id, ad_id, callback_id)
+
+            elif data == 'ad_manage_list':
+                self.show_ad_manage_list(user_id, callback_id)
+
+            elif data.startswith('ad_pause_'):
+                ad_id = int(data.split('_')[-1])
+                self.handle_ad_pause(user_id, ad_id, callback_id)
+
+            elif data.startswith('ad_resume_'):
+                ad_id = int(data.split('_')[-1])
+                self.handle_ad_resume(user_id, ad_id, callback_id)
             
         except Exception as e:
             print(f"Callback error: {e}")
@@ -1781,43 +1863,22 @@ Start earning money right away by completing simple tasks!
         if not tasks:
             no_tasks_texts = {
                 'tr': """
-📭 *GÖREV BULUNAMADI*
+📭 *GÖREV YOK*
 
-Şu anda mevcut görev bulunmuyor. 
-Lütfen daha sonra tekrar kontrol edin.
-
-⏰ *Yakında:*
-- Yeni görevler ekleniyor
-- Özel bonus görevleri
-- Limitli süreli promosyonlar
-
-💡 **Öneri:** Referanslarınızı davet ederek ekstra kazanmaya devam edebilirsiniz!
+Şu anda görev bulunmuyor.
+Yeni görev eklemek için **/createtask** kullan.
                 """,
                 'en': """
-📭 *NO TASKS AVAILABLE*
+📭 *NO TASKS*
 
-There are currently no available tasks.
-Please check back later.
-
-⏰ *Coming Soon:*
-- New tasks being added
-- Special bonus tasks
-- Limited time promotions
-
-💡 **Tip:** You can continue earning extra by inviting your referrals!
+There are no tasks right now.
+Create a task with **/createtask**.
                 """,
                 'ru': """
-📭 *ЗАДАЧИ НЕ НАЙДЕНЫ*
+📭 *НЕТ ЗАДАЧ*
 
-В настоящее время нет доступных задач.
-Пожалуйста, проверьте позже.
-
-⏰ *Скоро:*
-- Добавляются новые задачи
-- Специальные бонусные задачи
-- Ограниченные по времени акции
-
-💡 **Совет:** Вы можете продолжать зарабатывать дополнительно, приглашая своих рефералов!
+Сейчас задач нет.
+Создайте задачу через **/createtask**.
                 """
             }
             
@@ -1869,8 +1930,15 @@ You can earn rewards by completing the tasks below. Each task has its own instru
         
         keyboard = {'inline_keyboard': []}
         
+        type_map = {
+            'channel_join': 'Kanal',
+            'group_join': 'Grup',
+            'bot_start': 'Bot',
+            'post': 'Post'
+        }
         for task in tasks[:10]:  # İlk 10 görevi göster
-            btn_text = f"{task['title']} - ${task['reward']:.2f} ({task['current_participants']}/{task['max_participants']})"
+            task_type_label = type_map.get(task['task_type'], task['task_type'])
+            btn_text = f"{task_type_label} | {task['title']} - ${task['reward']:.4f} ({task['current_participants']}/{task['max_participants']})"
             keyboard['inline_keyboard'].append([
                 {'text': btn_text, 'callback_data': f'join_task_{task["id"]}'}
             ])
@@ -2006,59 +2074,26 @@ You can earn rewards by completing the tasks below. Each task has its own instru
             'tr': """
 💳 *BAKİYE YÜKLEME*
 
-━━━━━━━━━━━━━━━━
-✅ **TXID ile otomatik onay**
-✅ **Anında bakiye**
-━━━━━━━━━━━━━━━━
+ℹ️ Manuel yükleme için bize yaz:
+👉 @AlperenTHE
 
-📌 *Nasıl Çalışır?*
-1. Yüklemek istediğin tutarı gir
-2. İşlem TXID'ini (hash) gönder
-3. Bakiye otomatik eklenir
-
-⚠️ *ÖNEMLİ:*
-- TXID **zorunlu**
-- Yanlış TXID girersen işlem reddedilir
-- Minimum tutar **yok**
-- Destek: @AlperenTHE
+Minimum tutar yok.
 """,
             'en': """
 💳 *DEPOSIT*
 
-━━━━━━━━━━━━━━━━
-✅ **TXID auto approval**
-✅ **Instant balance**
-━━━━━━━━━━━━━━━━
+ℹ️ Manual deposit, contact:
+👉 @AlperenTHE
 
-📌 *How it works?*
-1. Enter the amount you want to deposit
-2. Send the transaction TXID (hash)
-3. Balance is added automatically
-
-⚠️ *IMPORTANT:*
-- TXID is **required**
-- Wrong TXID will be rejected
-- No minimum amount
-- Support: @AlperenTHE
+No minimum amount.
 """,
             'ru': """
 💳 *ДЕПОЗИТ*
 
-━━━━━━━━━━━━━━━━
-✅ **Авто-подтверждение по TXID**
-✅ **Мгновенный баланс**
-━━━━━━━━━━━━━━━━
+ℹ️ Ручное пополнение:
+👉 @AlperenTHE
 
-📌 *Как работает?*
-1. Укажите сумму пополнения
-2. Отправьте TXID (хэш)
-3. Баланс добавляется автоматически
-
-⚠️ *ВАЖНО:*
-- TXID **обязателен**
-- Неверный TXID будет отклонён
-- Минимальной суммы нет
-- Поддержка: @AlperenTHE
+Минимальной суммы нет.
 """
         }
 
@@ -2066,7 +2101,7 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 
         keyboard = {
             'inline_keyboard': [
-                [{'text': '💳 Yükleme Başlat', 'callback_data': 'start_deposit'}],
+                [{'text': '📞 Destek', 'url': 'https://t.me/AlperenTHE'}],
                 [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
@@ -2875,6 +2910,18 @@ ref = db.reference("/")
             task_id = self.db.admin_create_task(title, description, reward, max_parts, task_type, admin_id)
             
             if task_id:
+                if self.firebase.enabled:
+                    self.firebase.upsert('tasks', task_id, {
+                        'title': title,
+                        'description': description,
+                        'reward': reward,
+                        'max_participants': max_parts,
+                        'current_participants': 0,
+                        'status': 'active',
+                        'task_type': task_type,
+                        'created_by': admin_id,
+                        'created_at': datetime.utcnow().isoformat()
+                    })
                 send_message(admin_id, f"""
 ✅ Görev oluşturuldu!
 
@@ -2895,25 +2942,8 @@ ref = db.reference("/")
 
     def start_deposit_process(self, user_id, callback_id):
         """Yükleme sürecini başlat"""
-        user = self.db.get_user(user_id)
-        if not user:
-            answer_callback_query(callback_id, "❌ Kullanıcı bulunamadı")
-            return
-
-        self.user_states[user_id] = {'action': 'waiting_deposit_amount'}
-        answer_callback_query(callback_id, "💳 Yükleme başlatıldı")
-        keyboard = {
-            'inline_keyboard': [
-                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
-            ]
-        }
-        send_message(user_id, """
-💳 *BAKİYE YÜKLEME*
-
-Lütfen yüklemek istediğiniz tutarı gönderin.
-
-Örnek: `25`
-        """, reply_markup=keyboard)
+        answer_callback_query(callback_id, "📞 Manuel yükleme")
+        send_message(user_id, "Manuel yükleme için @AlperenTHE ile iletişime geçin.")
 
     def handle_deposit_amount(self, user_id, text, user):
         """Yükleme tutarı alındı"""
@@ -2962,6 +2992,14 @@ Lütfen yüklemek istediğiniz tutarı gönderin.
             VALUES (?, ?, 'deposit', ?)
         ''', (user_id, amount, f"Otomatik deposit: {txid}"))
         self.db.connection.commit()
+        if self.firebase.enabled:
+            self.firebase.add('deposits', {
+                'user_id': user_id,
+                'amount': amount,
+                'txid': txid,
+                'status': 'approved',
+                'created_at': datetime.utcnow().isoformat()
+            })
 
         try:
             send_message(STATS_CHANNEL, f"""
