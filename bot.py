@@ -29,6 +29,7 @@ MANDATORY_CHANNELS = [
         'name': 'İstatistik Kanalı',
         'emoji': '📊'
     }
+    # Not: Yeni zorunlu kanal bilgisi geldiğinde buraya ikinci bir giriş eklenebilir.
 ]
 
 if not TOKEN:
@@ -790,6 +791,8 @@ class TaskizBot:
                 self.show_profile(user_id)
             elif cmd == '/help':
                 self.show_help(user_id)
+            elif cmd == '/firebase':
+                self.show_firebase_guide(user_id)
             else:
                 self.show_main_menu(user_id, lang)
         else:
@@ -808,6 +811,8 @@ class TaskizBot:
                 self.show_profile(user_id)
             elif text in ["❓ Yardım", "Help"]:
                 self.show_help(user_id)
+            elif text in ["🔥 Firebase Rehberi", "Firebase Guide"]:
+                self.show_firebase_guide(user_id)
             else:
                 self.show_main_menu(user_id, lang)
     
@@ -857,6 +862,8 @@ Please select your preferred language. This choice will be used for all bot mess
                 user = self.db.get_user(user_id)
                 if user:
                     self.show_main_menu(user_id, user['language'])
+            elif data == 'firebase_guide':
+                self.show_firebase_guide(user_id)
             
             elif data == 'show_tasks':
                 self.show_tasks(user_id)
@@ -1786,6 +1793,9 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 • Asla şifrenizi veya özel bilgilerinizi paylaşmayın
 • Sadece resmi kanallardan gelen mesajlara güvenin
 • Şüpheli linklere tıklamayın
+
+🚀 *Firebase Veritabanı Rehberi:*
+• Detaylı kurulum ve entegrasyon için **/firebase** komutunu kullanın
             """,
             'en': f"""
 ❓ *HELP AND SUPPORT*
@@ -1839,6 +1849,9 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 • Never share your password or private information
 • Trust only messages from official channels
 • Don't click suspicious links
+
+🚀 *Firebase Database Guide:*
+• Use **/firebase** to view the step-by-step setup
             """,
             'ru': f"""
 ❓ *ПОМОЩЬ И ПОДДЕРЖКА*
@@ -1892,6 +1905,9 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 • Никогда не делитесь паролем или личной информацией
 • Доверяйте только сообщениям из официальных каналов
 • Не нажимайте на подозрительные ссылки
+
+🚀 *Firebase Database Guide:*
+• Use **/firebase** to view the step-by-step setup
             """
         }
         
@@ -1901,10 +1917,237 @@ You can earn rewards by completing the tasks below. Each task has its own instru
             'inline_keyboard': [
                 [{'text': '📞 Destekle İletişim', 'url': f'tg://resolve?domain={SUPPORT_USERNAME[1:]}'}],
                 [{'text': '📢 Resmi Kanal', 'url': 'https://t.me/TaskizLive'}],
+                [{'text': '🔥 Firebase Rehberi', 'callback_data': 'firebase_guide'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
         }
         
+        send_message(user_id, text, reply_markup=keyboard)
+
+    def show_firebase_guide(self, user_id):
+        """Firebase rehberini göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+
+        lang = user['language']
+
+        firebase_texts = {
+            'tr': f"""
+🔥 *FIREBASE VERİTABANI REHBERİ* 🔥
+
+━━━━━━━━━━━━━━━━
+🧩 **Hedef:** SQLite yerine Firebase ile ölçeklenebilir, güvenli ve hızlı bir altyapı kurmak.
+✨ **Seçim:** **Firestore** (önerilen) veya **Realtime Database**.
+✅ **Öneri:** Koleksiyon yapısı ve sorgular için **Firestore** daha uygundur.
+━━━━━━━━━━━━━━━━
+
+✅ *Adım 1 — Firebase Projesi Oluştur*
+1. https://console.firebase.google.com/ adresine git
+2. **Yeni proje** oluştur
+3. **Firestore** veya **Realtime Database**’i etkinleştir
+
+✅ *Adım 2 — Service Account Al*
+1. **Project Settings → Service accounts**
+2. **Generate new private key** ile JSON indir
+3. Bu JSON’u güvenli bir yere kaydet
+
+✅ *Adım 3 — Ortam Değişkenleri*
+Sunucunda şu değişkenleri ekle:
+• `FIREBASE_CREDENTIALS_JSON` → JSON içeriği (tek satır halinde)
+• `FIREBASE_PROJECT_ID` → Firebase proje ID (Firestore için)
+• `FIREBASE_DATABASE_URL` → Realtime DB URL (Realtime kullanacaksan)
+
+✅ *Adım 4 — Python Kurulumu*
+`pip install firebase-admin`
+
+✅ *Adım 5 — Basit Bağlantı Örneği (Firestore)*
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+✅ *Adım 5B — Realtime Database Bağlantısı (Opsiyonel)*
+```python
+import firebase_admin
+from firebase_admin import credentials, db
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "databaseURL": os.environ["FIREBASE_DATABASE_URL"]
+})
+ref = db.reference("/")
+```
+
+✅ *Adım 6 — Önerilen Koleksiyonlar*
+• `users` → kullanıcı profilleri  
+• `tasks` → görevler  
+• `task_participations` → katılımlar  
+• `withdrawals` → çekimler  
+• `stats` → günlük istatistikler  
+
+💡 *Kullanıcı Dostu Notlar:*
+• Alan adlarını Türkçe tutmak istiyorsan **ek açıklama** ekle  
+• Kritik alanlarda **güvenlik kuralları** yaz  
+• Gerçek zamanlı güncellemeler için **onSnapshot** kullan
+
+🎯 **Bir sonraki adım:** SQLite verilerini Firestore’a taşımak için örnek bir taşıma scripti ekleyebilirim.
+            """,
+            'en': f"""
+🔥 *FIREBASE DATABASE GUIDE* 🔥
+
+━━━━━━━━━━━━━━━━
+🧩 **Goal:** Move from SQLite to Firebase for a scalable, secure, and fast backend.
+✨ **Choice:** **Firestore** (recommended) or **Realtime Database**.
+✅ **Recommendation:** Firestore fits collections/queries better.
+━━━━━━━━━━━━━━━━
+
+✅ *Step 1 — Create a Firebase Project*
+1. Go to https://console.firebase.google.com/
+2. Create a **new project**
+3. Enable **Firestore** or **Realtime Database**
+
+✅ *Step 2 — Get a Service Account*
+1. **Project Settings → Service accounts**
+2. Click **Generate new private key**
+3. Store the JSON securely
+
+✅ *Step 3 — Environment Variables*
+Add these on your server:
+• `FIREBASE_CREDENTIALS_JSON` → JSON contents (single line)
+• `FIREBASE_PROJECT_ID` → Firebase project ID (Firestore)
+• `FIREBASE_DATABASE_URL` → Realtime DB URL (if using Realtime)
+
+✅ *Step 4 — Python Install*
+`pip install firebase-admin`
+
+✅ *Step 5 — Quick Connection Example (Firestore)*
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+✅ *Step 5B — Realtime Database Connection (Optional)*
+```python
+import firebase_admin
+from firebase_admin import credentials, db
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "databaseURL": os.environ["FIREBASE_DATABASE_URL"]
+})
+ref = db.reference("/")
+```
+
+✅ *Step 6 — Suggested Collections*
+• `users` → user profiles  
+• `tasks` → tasks  
+• `task_participations` → participations  
+• `withdrawals` → withdrawals  
+• `stats` → daily stats  
+
+💡 *User-Friendly Notes:*
+• Add **descriptions** if you want localized field names  
+• Use **security rules** on sensitive data  
+• For real-time updates, use **onSnapshot**
+
+🎯 **Next step:** I can add a migration script from SQLite to Firestore.
+            """,
+            'ru': f"""
+🔥 *FIREBASE DATABASE GUIDE* 🔥
+
+━━━━━━━━━━━━━━━━
+🧩 **Goal:** Move from SQLite to Firebase for a scalable, secure, and fast backend.
+✨ **Choice:** **Firestore** (recommended) or **Realtime Database**.
+✅ **Recommendation:** Firestore fits collections/queries better.
+━━━━━━━━━━━━━━━━
+
+✅ *Step 1 — Create a Firebase Project*
+1. Go to https://console.firebase.google.com/
+2. Create a **new project**
+3. Enable **Firestore** or **Realtime Database**
+
+✅ *Step 2 — Get a Service Account*
+1. **Project Settings → Service accounts**
+2. Click **Generate new private key**
+3. Store the JSON securely
+
+✅ *Step 3 — Environment Variables*
+Add these on your server:
+• `FIREBASE_CREDENTIALS_JSON` → JSON contents (single line)
+• `FIREBASE_PROJECT_ID` → Firebase project ID (Firestore)
+• `FIREBASE_DATABASE_URL` → Realtime DB URL (if using Realtime)
+
+✅ *Step 4 — Python Install*
+`pip install firebase-admin`
+
+✅ *Step 5 — Quick Connection Example (Firestore)*
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+✅ *Step 5B — Realtime Database Connection (Optional)*
+```python
+import firebase_admin
+from firebase_admin import credentials, db
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "databaseURL": os.environ["FIREBASE_DATABASE_URL"]
+})
+ref = db.reference("/")
+```
+
+✅ *Step 6 — Suggested Collections*
+• `users` → user profiles  
+• `tasks` → tasks  
+• `task_participations` → participations  
+• `withdrawals` → withdrawals  
+• `stats` → daily stats  
+
+💡 *User-Friendly Notes:*
+• Add **descriptions** if you want localized field names  
+• Use **security rules** on sensitive data  
+• For real-time updates, use **onSnapshot**
+
+🎯 **Next step:** I can add a migration script from SQLite to Firestore.
+            """
+        }
+
+        text = firebase_texts.get(lang, firebase_texts['tr'])
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📚 Firestore Docs', 'url': 'https://firebase.google.com/docs/firestore'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+
         send_message(user_id, text, reply_markup=keyboard)
     
     # ADMIN FONKSİYONLARI DEVAMI...
