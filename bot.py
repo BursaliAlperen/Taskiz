@@ -75,6 +75,26 @@ def send_message(chat_id, text, reply_markup=None, parse_mode='Markdown'):
         print(f"❌ Mesaj gönderme hatası: {e}")
         return None
 
+def send_photo(chat_id, photo, caption=None, reply_markup=None, parse_mode='Markdown'):
+    url = BASE_URL + "sendPhoto"
+    payload = {
+        'chat_id': chat_id,
+        'photo': photo,
+        'parse_mode': parse_mode
+    }
+
+    if caption:
+        payload['caption'] = caption
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
+
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        return response.json()
+    except Exception as e:
+        print(f"❌ Fotoğraf gönderme hatası: {e}")
+        return None
+
 def delete_message(chat_id, message_id):
     url = BASE_URL + "deleteMessage"
     payload = {'chat_id': chat_id, 'message_id': message_id}
@@ -227,6 +247,32 @@ class Database:
                 admin_note TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 processed_at TIMESTAMP
+            )
+        ''')
+
+        # Reklamlar
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER,
+                poster TEXT,
+                link_url TEXT,
+                ad_text TEXT,
+                budget REAL DEFAULT 0,
+                remaining_budget REAL DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ad_views (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ad_id INTEGER,
+                viewer_id INTEGER,
+                reward REAL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ad_id, viewer_id)
             )
         ''')
         
@@ -611,6 +657,72 @@ class Database:
             LIMIT ? OFFSET ?
         ''', (limit, offset))
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def create_ad(self, owner_id, poster, link_url, ad_text, budget):
+        try:
+            self.cursor.execute('''
+                INSERT INTO ads (owner_id, poster, link_url, ad_text, budget, remaining_budget, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'active')
+            ''', (owner_id, poster, link_url, ad_text, budget, budget))
+            self.connection.commit()
+            return self.cursor.lastrowid
+        except Exception as e:
+            print(f"Reklam oluşturma hatası: {e}")
+            return None
+
+    def get_random_active_ad(self, viewer_id):
+        self.cursor.execute('''
+            SELECT * FROM ads
+            WHERE status = 'active' AND remaining_budget > 0 AND owner_id != ?
+            ORDER BY RANDOM()
+            LIMIT 1
+        ''', (viewer_id,))
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def record_ad_view(self, ad_id, viewer_id, reward):
+        try:
+            self.cursor.execute('''
+                INSERT INTO ad_views (ad_id, viewer_id, reward)
+                VALUES (?, ?, ?)
+            ''', (ad_id, viewer_id, reward))
+            self.connection.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        except Exception as e:
+            print(f"Reklam görüntüleme hatası: {e}")
+            return False
+
+    def refund_ad_budget(self, ad_id, owner_id):
+        try:
+            self.cursor.execute('SELECT * FROM ads WHERE id = ? AND owner_id = ?', (ad_id, owner_id))
+            ad = self.cursor.fetchone()
+            if not ad:
+                return None
+            ad = dict(ad)
+            if ad['remaining_budget'] <= 0 or ad['status'] != 'active':
+                return None
+            refund_amount = ad['remaining_budget']
+            self.cursor.execute('''
+                UPDATE ads SET remaining_budget = 0, status = 'refunded' WHERE id = ?
+            ''', (ad_id,))
+            self.cursor.execute('''
+                UPDATE users SET balance = balance + ? WHERE user_id = ?
+            ''', (refund_amount, owner_id))
+            self.connection.commit()
+            return refund_amount
+        except Exception as e:
+            print(f"Reklam iade hatası: {e}")
+            return None
+
+    def get_user_ads(self, owner_id):
+        self.cursor.execute('''
+            SELECT * FROM ads
+            WHERE owner_id = ? AND status = 'active' AND remaining_budget > 0
+            ORDER BY created_at DESC
+        ''', (owner_id,))
+        return [dict(row) for row in self.cursor.fetchall()]
     
     # GENEL FONKSİYONLARI
     def update_last_active(self, user_id):
@@ -641,7 +753,7 @@ class Database:
         return [dict(row) for row in self.cursor.fetchall()]
     
     def complete_task(self, user_id, task_id, proof_url=None):
-        """Görevi tamamla"""
+        """Görevi tamamla (otomatik onay)"""
         try:
             # Görevi al
             self.cursor.execute('SELECT * FROM tasks WHERE id = ?', (task_id,))
@@ -656,10 +768,10 @@ class Database:
             if self.cursor.fetchone()[0] > 0:
                 return None
             
-            # Katılım kaydı oluştur
+            # Katılım kaydı oluştur (otomatik onay)
             self.cursor.execute('''
-                INSERT INTO task_participations (task_id, user_id, status, proof_url)
-                VALUES (?, ?, 'pending', ?)
+                INSERT INTO task_participations (task_id, user_id, status, proof_url, reviewed_by, reviewed_at)
+                VALUES (?, ?, 'approved', ?, 0, CURRENT_TIMESTAMP)
             ''', (task_id, user_id, proof_url))
             
             # Görev katılımcı sayısını artır
@@ -668,6 +780,34 @@ class Database:
                 WHERE id = ?
             ''', (task_id,))
             
+            # Kullanıcıya ödül ver
+            reward = task['reward']
+            self.cursor.execute('''
+                UPDATE users 
+                SET balance = balance + ?, 
+                    tasks_completed = tasks_completed + 1,
+                    total_earned = total_earned + ?
+                WHERE user_id = ?
+            ''', (reward, reward, user_id))
+
+            # Bakiye işlemi logu
+            self.cursor.execute('''
+                INSERT INTO balance_transactions (user_id, amount, transaction_type, description)
+                VALUES (?, ?, 'task_reward', ?)
+            ''', (user_id, reward, f"Görev: {task['title']}"))
+
+            # Referans komisyonu
+            user = self.get_user(user_id)
+            if user and user['referred_by']:
+                commission = reward * REF_TASK_COMMISSION
+                self.cursor.execute('''
+                    UPDATE users SET balance = balance + ? WHERE user_id = ?
+                ''', (commission, user['referred_by']))
+                self.cursor.execute('''
+                    UPDATE referrals SET earned_amount = earned_amount + ? 
+                    WHERE referred_id = ?
+                ''', (commission, user_id))
+
             self.connection.commit()
 
             try:
@@ -676,12 +816,12 @@ class Database:
 ━━━━━━━━━━━━
 🆔 Görev: `#{task_id}`
 👤 Kullanıcı: `{user_id}`
-⏳ Durum: **Onay Bekliyor**
+✅ Durum: **Otomatik Onay**
                 """)
             except Exception as e:
                 print(f"Görev katılım bildirim hatası: {e}")
 
-            return task['reward']
+            return reward
         except Exception as e:
             print(f"Görev tamamlama hatası: {e}")
             return None
@@ -875,10 +1015,19 @@ Please join these channels to continue:
             print(f"Hata: {e}")
     
     def handle_message(self, message):
+        user_id = message['from']['id']
         if 'text' not in message:
+            if user_id in self.user_states and self.user_states[user_id].get('action') == 'waiting_ad_poster':
+                photos = message.get('photo', [])
+                if photos:
+                    file_id = photos[-1].get('file_id')
+                    if file_id:
+                        user = self.db.get_user(user_id)
+                        if user:
+                            self.handle_ad_poster(user_id, file_id, user)
+                return
             return
         
-        user_id = message['from']['id']
         text = message['text']
         
         # Admin paneli kontrolü
@@ -946,6 +1095,18 @@ Please join these channels to continue:
             if action == 'waiting_deposit_txid':
                 self.handle_deposit_txid(user_id, text, user)
                 return
+            if action == 'waiting_ad_poster':
+                self.handle_ad_poster(user_id, text, user)
+                return
+            if action == 'waiting_ad_link':
+                self.handle_ad_link(user_id, text, user)
+                return
+            if action == 'waiting_ad_text':
+                self.handle_ad_text(user_id, text, user)
+                return
+            if action == 'waiting_ad_budget':
+                self.handle_ad_budget(user_id, text, user)
+                return
         
         # Normal komutlar
         self.process_command(user_id, text, user)
@@ -1008,6 +1169,8 @@ Please join these channels to continue:
                 self.show_help(user_id)
             elif cmd == '/firebase':
                 self.show_firebase_guide(user_id)
+            elif cmd == '/ads':
+                self.show_ads_menu(user_id)
             else:
                 self.show_main_menu(user_id, lang)
         else:
@@ -1020,6 +1183,8 @@ Please join these channels to continue:
                 self.show_withdraw(user_id)
             elif text in ["💳 Yükle", "Deposit"]:
                 self.show_deposit(user_id)
+            elif text in ["📢 Reklam", "📢 Ads"]:
+                self.show_ads_menu(user_id)
             elif text in ["👥 Davet", "Referral"]:
                 self.show_referral(user_id)
             elif text in ["👤 Profil", "Profile"]:
@@ -1028,6 +1193,8 @@ Please join these channels to continue:
                 self.show_help(user_id)
             elif text in ["🔥 Firebase Rehberi", "Firebase Guide"]:
                 self.show_firebase_guide(user_id)
+            elif text in ["🛡️ Admin Panel"] and str(user_id) in ADMIN_IDS:
+                self.show_admin_panel(user_id)
             else:
                 self.show_main_menu(user_id, lang)
     
@@ -1053,6 +1220,182 @@ Please select your preferred language. This choice will be used for all bot mess
         }
         
         send_message(user_id, text, reply_markup=keyboard)
+
+    def show_ads_menu(self, user_id):
+        """Reklam menüsü"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+
+        lang = user['language']
+        ads_texts = {
+            'tr': """
+📢 *POST REKLAM*
+
+Buradan reklamını oluşturabilir, görüntüleyebilir ve kalan bütçeni bakiyeye çevirebilirsin.
+            """,
+            'en': """
+📢 *POST ADS*
+
+Create your ad, view ads, and convert remaining ad budget back to balance.
+            """,
+            'ru': """
+📢 *ПОСТ РЕКЛАМА*
+
+Создавайте рекламу, смотрите объявления и конвертируйте остаток бюджета.
+            """
+        }
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📢 Post Reklam', 'callback_data': 'start_ad'}],
+                [{'text': '👁️ Reklam Görüntüle', 'callback_data': 'view_ad'}],
+                [{'text': '💱 Reklam Bakiye Dönüştür', 'callback_data': 'ad_refund_list'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        } if lang == 'tr' else {
+            'inline_keyboard': [
+                [{'text': '📢 Create Ad', 'callback_data': 'start_ad'}],
+                [{'text': '👁️ View Ad', 'callback_data': 'view_ad'}],
+                [{'text': '💱 Convert Ad Budget', 'callback_data': 'ad_refund_list'}],
+                [{'text': '🏠 Main Menu', 'callback_data': 'main_menu'}]
+            ]
+        }
+
+        send_message(user_id, ads_texts.get(lang, ads_texts['tr']), reply_markup=keyboard)
+
+    def start_ad_process(self, user_id, callback_id):
+        """Reklam oluşturma süreci"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        self.user_states[user_id] = {'action': 'waiting_ad_poster'}
+        answer_callback_query(callback_id, "📢 Reklam başlatıldı")
+        send_message(user_id, "🖼️ Poster görsel URL'sini veya file_id gönder.")
+
+    def handle_ad_poster(self, user_id, text, user):
+        self.user_states[user_id] = {
+            'action': 'waiting_ad_link',
+            'poster': text.strip()
+        }
+        send_message(user_id, "🔗 Reklam linkini gönder.")
+
+    def handle_ad_link(self, user_id, text, user):
+        self.user_states[user_id]['action'] = 'waiting_ad_text'
+        self.user_states[user_id]['link_url'] = text.strip()
+        send_message(user_id, "📝 Reklam metnini gönder.")
+
+    def handle_ad_text(self, user_id, text, user):
+        self.user_states[user_id]['action'] = 'waiting_ad_budget'
+        self.user_states[user_id]['ad_text'] = text.strip()
+        send_message(user_id, "💰 Reklam bütçesini gir.")
+
+    def handle_ad_budget(self, user_id, text, user):
+        try:
+            budget = float(text)
+            if budget <= 0:
+                send_message(user_id, "❌ Bütçe pozitif olmalı.")
+                return
+        except ValueError:
+            send_message(user_id, "❌ Geçerli bir sayı gir.")
+            return
+
+        if user['balance'] < budget:
+            send_message(user_id, "❌ Yetersiz bakiye.")
+            return
+
+        poster = self.user_states[user_id]['poster']
+        link_url = self.user_states[user_id]['link_url']
+        ad_text = self.user_states[user_id]['ad_text']
+
+        self.db.cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (budget, user_id))
+        ad_id = self.db.create_ad(user_id, poster, link_url, ad_text, budget)
+        self.db.connection.commit()
+
+        if ad_id:
+            send_message(user_id, f"✅ Reklam oluşturuldu! ID: #{ad_id}\n💰 Bütçe: ${budget:.2f}")
+        else:
+            send_message(user_id, "❌ Reklam oluşturulamadı.")
+
+        del self.user_states[user_id]
+
+    def show_ad(self, user_id, callback_id=None):
+        ad = self.db.get_random_active_ad(user_id)
+        if not ad:
+            if callback_id:
+                answer_callback_query(callback_id, "📭 Şu anda reklam yok")
+            send_message(user_id, "📭 Şu anda görüntülenecek reklam yok.")
+            return
+
+        reward = min(ad['remaining_budget'], ad['budget'] * 0.5)
+        caption = f"""
+📢 *REKLAM*
+
+{ad['ad_text']}
+
+💰 İzleme Ödülü: `${reward:.2f}`
+        """
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🔗 Linke Git', 'url': ad['link_url']}],
+                [{'text': '✅ Ödül Al', 'callback_data': f"ad_reward_{ad['id']}"}]
+            ]
+        }
+        send_photo(user_id, ad['poster'], caption=caption, reply_markup=keyboard)
+        if callback_id:
+            answer_callback_query(callback_id)
+
+    def handle_ad_reward(self, user_id, ad_id, callback_id):
+        self.db.cursor.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
+        ad = self.db.cursor.fetchone()
+        if not ad:
+            answer_callback_query(callback_id, "❌ Reklam bulunamadı", True)
+            return
+        ad = dict(ad)
+        if ad['remaining_budget'] <= 0 or ad['status'] != 'active':
+            answer_callback_query(callback_id, "❌ Reklam bütçesi bitti", True)
+            return
+
+        reward = min(ad['remaining_budget'], ad['budget'] * 0.5)
+        if not self.db.record_ad_view(ad_id, user_id, reward):
+            answer_callback_query(callback_id, "ℹ️ Bu reklam için ödül alındı", True)
+            return
+
+        self.db.cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (reward, user_id))
+        self.db.cursor.execute('''
+            UPDATE ads
+            SET remaining_budget = remaining_budget - ?,
+                status = CASE WHEN remaining_budget - ? <= 0 THEN 'completed' ELSE status END
+            WHERE id = ?
+        ''', (reward, reward, ad_id))
+        self.db.connection.commit()
+
+        answer_callback_query(callback_id, f"✅ Ödül eklendi: ${reward:.2f}", True)
+
+    def show_ad_refund_list(self, user_id, callback_id=None):
+        ads = self.db.get_user_ads(user_id)
+        if not ads:
+            if callback_id:
+                answer_callback_query(callback_id, "📭 Aktif reklam yok")
+            send_message(user_id, "📭 Aktif reklam bulunamadı.")
+            return
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': f"ID #{ad['id']} - ${ad['remaining_budget']:.2f}", 'callback_data': f"ad_refund_{ad['id']}"}]
+                for ad in ads
+            ] + [[{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]]
+        }
+        send_message(user_id, "💱 İade edilecek reklamı seç:", reply_markup=keyboard)
+        if callback_id:
+            answer_callback_query(callback_id)
+
+    def handle_ad_refund(self, user_id, ad_id, callback_id):
+        refunded = self.db.refund_ad_budget(ad_id, user_id)
+        if refunded is None:
+            answer_callback_query(callback_id, "❌ İade edilemedi", True)
+            return
+        answer_callback_query(callback_id, f"✅ İade edildi: ${refunded:.2f}", True)
     
     def handle_callback_query(self, callback_query):
         data = callback_query['data']
@@ -1120,6 +1463,26 @@ Please select your preferred language. This choice will be used for all bot mess
                 if user:
                     answer_callback_query(callback_id, f"📋 Referans Kodunuz: {user['referral_code']}\nBu kodu kopyalayıp paylaşabilirsiniz.", True)
             
+            elif data == 'show_ads':
+                self.show_ads_menu(user_id)
+
+            elif data == 'start_ad':
+                self.start_ad_process(user_id, callback_id)
+
+            elif data == 'view_ad':
+                self.show_ad(user_id, callback_id)
+
+            elif data == 'ad_refund_list':
+                self.show_ad_refund_list(user_id, callback_id)
+
+            elif data.startswith('ad_reward_'):
+                ad_id = int(data.split('_')[-1])
+                self.handle_ad_reward(user_id, ad_id, callback_id)
+
+            elif data.startswith('ad_refund_'):
+                ad_id = int(data.split('_')[-1])
+                self.handle_ad_refund(user_id, ad_id, callback_id)
+            
         except Exception as e:
             print(f"Callback error: {e}")
             answer_callback_query(callback_id, "❌ Bir hata oluştu / An error occurred")
@@ -1131,24 +1494,20 @@ Please select your preferred language. This choice will be used for all bot mess
         text = f"""
 🛡️ **ADMIN PANEL**
 
-━━━━━━━━━━━━━━━━
-👥 Toplam Kullanıcı: `{stats['total_users']}`
-🟢 Aktif Kullanıcı: `{stats['active_users']}`
-🆕 Yeni Kullanıcı (24h): `{stats['new_users']}`
-💰 Toplam Bakiye: `${stats['total_balance']:.2f}`
-📥 Bekleyen Çekim: `{stats['pending_withdrawals']}`
-━━━━━━━━━━━━━━━━
+👥 `{stats['total_users']}` kullanıcı
+🟢 `{stats['active_users']}` aktif
+🆕 `{stats['new_users']}` yeni (24h)
+💰 `${stats['total_balance']:.2f}` toplam bakiye
+📥 `{stats['pending_withdrawals']}` bekleyen çekim
 
-📌 **Komutlar**
+📌 **Hızlı Komutlar**
 • `/addbalance USER_ID AMOUNT [REASON]`
 • `/createtask TITLE REWARD MAX_PARTICIPANTS TYPE DESCRIPTION`
-• `/depositnote DEPOSIT_ID NOTE`
 """
 
         keyboard = {
             'inline_keyboard': [
                 [{'text': '📊 İstatistik', 'callback_data': 'admin_stats'}],
-                [{'text': '💳 Bekleyen Yüklemeler', 'callback_data': 'admin_pending_deposits'}],
                 [{'text': '🔄 Yenile', 'callback_data': 'admin_refresh'}]
             ]
         }
@@ -1172,7 +1531,6 @@ Please select your preferred language. This choice will be used for all bot mess
 🆕 Yeni Kullanıcı (24h): `{stats['new_users']}`
 💰 Toplam Bakiye: `${stats['total_balance']:.2f}`
 📥 Bekleyen Çekim: `{stats['pending_withdrawals']}`
-💳 Bekleyen Yükleme: `{len(self.db.admin_get_pending_deposits())}`
 """
             keyboard = {
                 'inline_keyboard': [
@@ -1181,48 +1539,6 @@ Please select your preferred language. This choice will be used for all bot mess
             }
             send_message(admin_id, text, reply_markup=keyboard)
             answer_callback_query(callback_id)
-            return
-
-        if data == 'admin_pending_deposits':
-            deposits = self.db.admin_get_pending_deposits()
-            if not deposits:
-                send_message(admin_id, "✅ Bekleyen yükleme yok.")
-                answer_callback_query(callback_id)
-                return
-
-            for deposit in deposits[:10]:
-                user_label = deposit.get('username') or deposit.get('first_name') or 'N/A'
-                msg = f"""
-💳 **YÜKLEME BEKLİYOR**
-━━━━━━━━━━━━
-🆔 ID: `#{deposit['id']}`
-👤 Kullanıcı: `{deposit['user_id']}` (@{user_label})
-💰 Tutar: `${deposit['amount']}`
-🔗 TXID: `{deposit['txid']}`
-"""
-                keyboard = {
-                    'inline_keyboard': [
-                        [
-                            {'text': '✅ Onayla', 'callback_data': f"admin_deposit_approve_{deposit['id']}"},
-                            {'text': '❌ Reddet', 'callback_data': f"admin_deposit_reject_{deposit['id']}"}
-                        ]
-                    ]
-                }
-                send_message(admin_id, msg, reply_markup=keyboard)
-
-            answer_callback_query(callback_id, "✅ Bekleyen yüklemeler listelendi")
-            return
-
-        if data.startswith('admin_deposit_approve_'):
-            deposit_id = int(data.split('_')[-1])
-            ok = self.db.admin_process_deposit(deposit_id, 'approved', admin_id)
-            answer_callback_query(callback_id, "✅ Yükleme onaylandı" if ok else "❌ İşlem başarısız")
-            return
-
-        if data.startswith('admin_deposit_reject_'):
-            deposit_id = int(data.split('_')[-1])
-            ok = self.db.admin_process_deposit(deposit_id, 'rejected', admin_id)
-            answer_callback_query(callback_id, "❌ Yükleme reddedildi" if ok else "❌ İşlem başarısız")
             return
 
         answer_callback_query(callback_id, "ℹ️ İşlem tamamlandı")
@@ -1253,7 +1569,7 @@ Kolay görevler tamamlayarak para kazanmaya hemen başla!
 💡 *Nasıl Çalışır?*
 1. 🎯 Görevler bölümünden bir görev seç
 2. 📋 Görevin talimatlarını uygula
-3. ✅ Tamamlandığını onayla
+3. ✅ Görevi tamamla
 4. 💰 Hemen ödülünü al!
 
 ⚡ *Hızlı Başlangıç İçin:*
@@ -1276,7 +1592,7 @@ Start earning money right away by completing simple tasks!
 💡 *How It Works?*
 1. 🎯 Select a task from Tasks section
 2. 📋 Follow the task instructions
-3. ✅ Confirm completion
+3. ✅ Complete the task
 4. 💰 Get your reward instantly!
 
 ⚡ *For Quick Start:*
@@ -1299,7 +1615,7 @@ Start earning money right away by completing simple tasks!
 💡 *Как это работает?*
 1. 🎯 Выберите задачу из раздела Задачи
 2. 📋 Выполните инструкции задачи
-3. ✅ Подтвердите выполнение
+3. ✅ Завершите задачу
 4. 💰 Получите вознаграждение мгновенно!
 
 ⚡ *Для быстрого старта:*
@@ -1314,7 +1630,7 @@ Start earning money right away by completing simple tasks!
         keyboard = {
             'keyboard': [
                 ["🎯 Görevler", "💰 Bakiye"],
-                ["🏧 Çek", "💳 Yükle"],
+                ["💳 Yükle", "📢 Reklam"],
                 ["👥 Davet", "👤 Profil"],
                 ["❓ Yardım", "⚙️ Ayarlar"]
             ],
@@ -1323,13 +1639,16 @@ Start earning money right away by completing simple tasks!
         } if lang == 'tr' else {
             'keyboard': [
                 ["🎯 Tasks", "💰 Balance"],
-                ["🏧 Withdraw", "💳 Deposit"],
+                ["💳 Deposit", "📢 Ads"],
                 ["👥 Referral", "👤 Profile"],
                 ["❓ Help", "⚙️ Settings"]
             ],
             'resize_keyboard': True,
             'one_time_keyboard': False
         }
+
+        if str(user_id) in ADMIN_IDS:
+            keyboard['keyboard'].append(["🛡️ Admin Panel"])
         
         send_message(user_id, text, reply_markup=keyboard)
     
@@ -1409,7 +1728,7 @@ Aşağıdaki görevleri tamamlayarak ödül kazanabilirsiniz. Her görevin kendi
 1. Katılmak istediğiniz görevi seçin
 2. Görevin açıklamasını dikkatlice okuyun
 3. Talimatları eksiksiz uygulayın
-4. Tamamlandığında onay için bekleyin
+4. Tamamlandığında ödül otomatik eklenir
             """,
             'en': f"""
 🎯 *AVAILABLE TASKS* ({len(tasks)})
@@ -1420,7 +1739,7 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 1. Select the task you want to join
 2. Read the task description carefully
 3. Follow the instructions completely
-4. Wait for approval when completed
+4. Reward is added automatically
             """,
             'ru': f"""
 🎯 *ДОСТУПНЫЕ ЗАДАЧИ* ({len(tasks)})
@@ -1431,7 +1750,7 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 1. Выберите задачу, к которой хотите присоединиться
 2. Внимательно прочитайте описание задачи
 3. Полностью следуйте инструкциям
-4. Дождитесь подтверждения по завершении
+4. Награда добавляется автоматически
             """
         }.get(lang)
         
@@ -1571,13 +1890,13 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 
 ━━━━━━━━━━━━━━━━
 ✅ **TXID ile otomatik onay**
-✅ **Hızlı işlem**
+✅ **Anında bakiye**
 ━━━━━━━━━━━━━━━━
 
 📌 *Nasıl Çalışır?*
 1. Yüklemek istediğin tutarı gir
 2. İşlem TXID'ini (hash) gönder
-3. Admin onaylayınca bakiye otomatik eklenir
+3. Bakiye otomatik eklenir
 
 ⚠️ *ÖNEMLİ:*
 - TXID **zorunlu**
@@ -1587,14 +1906,14 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 💳 *DEPOSIT*
 
 ━━━━━━━━━━━━━━━━
-✅ **TXID-based approval**
-✅ **Fast processing**
+✅ **TXID auto approval**
+✅ **Instant balance**
 ━━━━━━━━━━━━━━━━
 
 📌 *How it works?*
 1. Enter the amount you want to deposit
 2. Send the transaction TXID (hash)
-3. Balance is added after admin approval
+3. Balance is added automatically
 
 ⚠️ *IMPORTANT:*
 - TXID is **required**
@@ -1604,14 +1923,14 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 💳 *ДЕПОЗИТ*
 
 ━━━━━━━━━━━━━━━━
-✅ **Подтверждение по TXID**
-✅ **Быстрая обработка**
+✅ **Авто-подтверждение по TXID**
+✅ **Мгновенный баланс**
 ━━━━━━━━━━━━━━━━
 
 📌 *Как работает?*
 1. Укажите сумму пополнения
 2. Отправьте TXID (хэш)
-3. Баланс добавляется после подтверждения админом
+3. Баланс добавляется автоматически
 
 ⚠️ *ВАЖНО:*
 - TXID **обязателен**
@@ -2016,8 +2335,8 @@ They will be re-enabled with a new announcement.
 1. **Nasıl para kazanırım?**
    • Görevler bölümünden görev seçin
    • Talimatları uygulayın
-   • Tamamlandığında onay için bekleyin
-   • Ödülünüz otomatik olarak bakiyenize eklenecek
+   • Tamamlandığında ödül otomatik eklenir
+   • Bakiye anında güncellenir
 
 2. **Para çekme şartları nelerdir?**
    • Şu an çekim kapalı
@@ -2029,12 +2348,11 @@ They will be re-enabled with a new announcement.
    • Ödemeler otomatik ve anlıktır
 
 4. **Görev onay süresi ne kadar?**
-   • Normal görevler: 1-12 saat
-   • Özel görevler: 24 saate kadar
-   • Her görev manuel olarak kontrol edilir
+   • Otomatik onay aktif
+   • Ödül anlık eklenir
 
 5. **Bakiye neden artmıyor?**
-   • Görev tamamlamaları onay bekliyor olabilir
+   • TXID/işlem hatalı olabilir
    • Sistemde teknik bir sorun olabilir
    • Lütfen destek ekibiyle iletişime geçin
 
@@ -2070,8 +2388,8 @@ They will be re-enabled with a new announcement.
 1. **How do I earn money?**
    • Select tasks from Tasks section
    • Follow the instructions
-   • Wait for approval when completed
-   • Your reward will be automatically added to your balance
+   • Reward is added automatically
+   • Balance updates instantly
 
 2. **What are the withdrawal conditions?**
    • Withdrawals are currently disabled
@@ -2083,12 +2401,11 @@ They will be re-enabled with a new announcement.
    • Payments are automatic and instant
 
 4. **How long does task approval take?**
-   • Normal tasks: 1-12 hours
-   • Special tasks: up to 24 hours
-   • Each task is manually checked
+   • Auto-approval is enabled
+   • Rewards are instant
 
 5. **Why isn't my balance increasing?**
-   • Task completions may be pending approval
+   • TXID/transaction may be invalid
    • There may be a technical issue in the system
    • Please contact the support team
 
@@ -2124,8 +2441,8 @@ They will be re-enabled with a new announcement.
 1. **Как я могу зарабатывать деньги?**
    • Выбирайте задачи из раздела Задачи
    • Следуйте инструкциям
-   • Дождитесь подтверждения по завершении
-   • Ваша награда будет автоматически добавлена на ваш баланс
+   • Награда добавляется автоматически
+   • Баланс обновляется мгновенно
 
 2. **Каковы условия вывода?**
    • Выводы сейчас отключены
@@ -2137,12 +2454,11 @@ They will be re-enabled with a new announcement.
    • Выплаты автоматические и мгновенные
 
 4. **Сколько времени занимает подтверждение задачи?**
-   • Обычные задачи: 1-12 часов
-   • Специальные задачи: до 24 часов
-   • Каждая задача проверяется вручную
+   • Включено авто-подтверждение
+   • Награды начисляются сразу
 
 5. **Почему не увеличивается мой баланс?**
-   • Завершения задач могут ожидать подтверждения
+   • TXID/транзакция может быть неверной
    • Возможна техническая проблема в системе
    • Пожалуйста, свяжитесь со службой поддержки
 
@@ -2497,27 +2813,34 @@ Lütfen yüklemek istediğiniz tutarı gönderin.
 
         amount = self.user_states[user_id].get('deposit_amount', 0)
         self.db.cursor.execute('''
-            INSERT INTO deposits (user_id, amount, txid, status)
-            VALUES (?, ?, ?, 'pending')
+            INSERT INTO deposits (user_id, amount, txid, status, admin_id, admin_note, processed_at)
+            VALUES (?, ?, ?, 'approved', 0, 'auto', CURRENT_TIMESTAMP)
         ''', (user_id, amount, txid))
+        self.db.cursor.execute('''
+            UPDATE users SET balance = balance + ? WHERE user_id = ?
+        ''', (amount, user_id))
+        self.db.cursor.execute('''
+            INSERT INTO balance_transactions (user_id, amount, transaction_type, description)
+            VALUES (?, ?, 'deposit', ?)
+        ''', (user_id, amount, f"Otomatik deposit: {txid}"))
         self.db.connection.commit()
 
         try:
             send_message(STATS_CHANNEL, f"""
-💳 **YENİ YÜKLEME TALEBİ**
+💳 **MEGA DEPOSIT**
 ━━━━━━━━━━━━
 👤 Kullanıcı: `{user_id}`
 💰 Tutar: `${amount}`
 🔗 TXID: `{txid}`
+✅ Durum: **Otomatik Onay**
             """)
         except Exception as e:
             print(f"Deposit bildirim hatası: {e}")
 
         send_message(user_id, f"""
-✅ Yükleme talebin alındı!
+✅ Yükleme tamamlandı!
 💰 Tutar: `${amount:.2f}`
 🔗 TXID: `{txid}`
-⏳ Admin onayı bekleniyor.
         """)
 
         del self.user_states[user_id]
@@ -2539,21 +2862,7 @@ Lütfen yüklemek istediğiniz tutarı gönderin.
         reward = self.db.complete_task(user_id, task_id)
         
         if reward:
-            answer_callback_query(callback_id, f"✅ Göreve katıldın!\n💰 Ödül: ${reward}\n⏳ Onay bekleniyor...")
-            
-            # Adminlere bildirim
-            for admin in ADMIN_IDS:
-                try:
-                    send_message(admin, f"""
-🎯 *YENİ GÖREV KATILIMI*
-
-👤 Kullanıcı: {user['first_name']} (@{user['username'] or 'N/A'})
-🆔 ID: `{user_id}`
-💰 Ödül: `${reward}`
-⏰ Zaman: {datetime.now().strftime('%H:%M:%S')}
-                    """)
-                except:
-                    pass
+            answer_callback_query(callback_id, f"✅ Görev tamamlandı!\n💰 Ödül: ${reward}\n⚡ Otomatik eklendi")
         else:
             answer_callback_query(callback_id, "❌ Göreve zaten katıldın veya görev bulunamadı", True)
 
