@@ -11,6 +11,8 @@ import pytz
 from typing import Dict, List
 import uuid
 import random
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # Telegram Ayarları
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -36,6 +38,9 @@ if not TOKEN:
     raise ValueError("Bot token gerekli!")
 
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
+
+FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "")
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "")
 
 # Dil Ayarları
 SUPPORTED_LANGUAGES = {
@@ -130,6 +135,38 @@ def get_chat_member(chat_id, user_id):
         return False
     except:
         return False
+
+# Firebase helper
+class FirebaseClient:
+    def __init__(self):
+        self.enabled = False
+        self.db = None
+        if not FIREBASE_CREDENTIALS_JSON or not FIREBASE_PROJECT_ID:
+            return
+        try:
+            cred = credentials.Certificate(json.loads(FIREBASE_CREDENTIALS_JSON))
+            if not firebase_admin._apps:
+                firebase_admin.initialize_app(cred, {"projectId": FIREBASE_PROJECT_ID})
+            self.db = firestore.client()
+            self.enabled = True
+        except Exception as e:
+            print(f"Firebase init hatası: {e}")
+
+    def upsert(self, collection, doc_id, payload):
+        if not self.enabled:
+            return
+        try:
+            self.db.collection(collection).document(str(doc_id)).set(payload, merge=True)
+        except Exception as e:
+            print(f"Firebase yazma hatası ({collection}): {e}")
+
+    def add(self, collection, payload):
+        if not self.enabled:
+            return
+        try:
+            self.db.collection(collection).add(payload)
+        except Exception as e:
+            print(f"Firebase ekleme hatası ({collection}): {e}")
 
 # Database Sınıfı
 class Database:
@@ -312,9 +349,10 @@ class Database:
         count = self.cursor.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
         if count == 0:
             sample_tasks = [
-                ('Telegram Kanalına Katıl', '@TaskizLive kanalımıza katılın', 0.05, 1000, 'channel_join', 1),
-                ('Botu Beğenin', 'Botu favorilere ekleyin', 0.03, 500, 'like', 1),
-                ('Gönderi Paylaşımı', 'Belirtilen gönderiyi paylaşın', 0.08, 300, 'share', 1),
+                ('Kanal Görevi', 'Belirtilen kanala katılın', 0.05, 1000, 'channel_join', 1),
+                ('Grup Görevi', 'Belirtilen gruba katılın', 0.05, 800, 'group_join', 1),
+                ('Post Görevi', 'Belirtilen postu beğen/yorum yap', 0.08, 500, 'post', 1),
+                ('Bot Görevi', 'Belirtilen botu başlat', 0.04, 600, 'bot_start', 1),
             ]
             for task in sample_tasks:
                 self.cursor.execute('''
@@ -723,6 +761,15 @@ class Database:
             ORDER BY created_at DESC
         ''', (owner_id,))
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_ad_budget_summary(self, owner_id):
+        self.cursor.execute('''
+            SELECT COUNT(*) as active_ads, COALESCE(SUM(remaining_budget), 0) as remaining_budget
+            FROM ads
+            WHERE owner_id = ? AND status = 'active' AND remaining_budget > 0
+        ''', (owner_id,))
+        row = self.cursor.fetchone()
+        return dict(row) if row else {'active_ads': 0, 'remaining_budget': 0}
     
     # GENEL FONKSİYONLARI
     def update_last_active(self, user_id):
@@ -948,6 +995,7 @@ class TaskizBot:
     def __init__(self):
         self.db = Database()
         self.user_states = {}  # EKSİK OLAN SATIR - EKLENDİ
+        self.firebase = FirebaseClient()
         print(f"🤖 {BOT_NAME} başlatıldı!")
 
     def enforce_mandatory_channels(self, user_id, lang='tr'):
@@ -1004,6 +1052,13 @@ Please join these channels to continue:
 
         send_message(user_id, texts.get(lang, texts['tr']), reply_markup=keyboard)
         return False
+
+    def cancel_user_action(self, user_id, callback_id=None):
+        if user_id in self.user_states:
+            del self.user_states[user_id]
+        if callback_id:
+            answer_callback_query(callback_id, "❌ İşlem iptal edildi")
+        send_message(user_id, "❌ İşlem iptal edildi. Ana menüye dönebilirsiniz.")
     
     def handle_update(self, update):
         try:
@@ -1055,6 +1110,16 @@ Please join these channels to continue:
             last_name = message['from'].get('last_name', '')
             
             user = self.db.create_user(user_id, username, first_name, last_name, 'tr', referred_by)
+            if self.firebase.enabled:
+                self.firebase.upsert('users', user_id, {
+                    'user_id': user_id,
+                    'username': username,
+                    'first_name': first_name,
+                    'last_name': last_name,
+                    'language': 'tr',
+                    'created_at': datetime.utcnow().isoformat(),
+                    'referred_by': referred_by
+                })
             
             # Grup bildirimi
             group_msg = f"""
@@ -1271,33 +1336,53 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             return
         self.user_states[user_id] = {'action': 'waiting_ad_poster'}
         answer_callback_query(callback_id, "📢 Reklam başlatıldı")
-        send_message(user_id, "🖼️ Poster görsel URL'sini veya file_id gönder.")
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
+            ]
+        }
+        send_message(user_id, "🖼️ Poster görsel URL'sini veya file_id gönder.", reply_markup=keyboard)
 
     def handle_ad_poster(self, user_id, text, user):
         self.user_states[user_id] = {
             'action': 'waiting_ad_link',
             'poster': text.strip()
         }
-        send_message(user_id, "🔗 Reklam linkini gönder.")
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
+            ]
+        }
+        send_message(user_id, "🔗 Reklam linkini gönder.", reply_markup=keyboard)
 
     def handle_ad_link(self, user_id, text, user):
         self.user_states[user_id]['action'] = 'waiting_ad_text'
         self.user_states[user_id]['link_url'] = text.strip()
-        send_message(user_id, "📝 Reklam metnini gönder.")
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
+            ]
+        }
+        send_message(user_id, "📝 Reklam metnini gönder.", reply_markup=keyboard)
 
     def handle_ad_text(self, user_id, text, user):
         self.user_states[user_id]['action'] = 'waiting_ad_budget'
         self.user_states[user_id]['ad_text'] = text.strip()
-        send_message(user_id, "💰 Reklam bütçesini gir.")
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
+            ]
+        }
+        send_message(user_id, "💰 Reklam bütçesini gir.", reply_markup=keyboard)
 
     def handle_ad_budget(self, user_id, text, user):
         try:
             budget = float(text)
             if budget <= 0:
-                send_message(user_id, "❌ Bütçe pozitif olmalı.")
+                send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz.")
                 return
         except ValueError:
-            send_message(user_id, "❌ Geçerli bir sayı gir.")
+            send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz.")
             return
 
         if user['balance'] < budget:
@@ -1313,6 +1398,17 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         self.db.connection.commit()
 
         if ad_id:
+            if self.firebase.enabled:
+                self.firebase.upsert('ads', ad_id, {
+                    'owner_id': user_id,
+                    'poster': poster,
+                    'link_url': link_url,
+                    'ad_text': ad_text,
+                    'budget': budget,
+                    'remaining_budget': budget,
+                    'status': 'active',
+                    'created_at': datetime.utcnow().isoformat()
+                })
             send_message(user_id, f"✅ Reklam oluşturuldu! ID: #{ad_id}\n💰 Bütçe: ${budget:.2f}")
         else:
             send_message(user_id, "❌ Reklam oluşturulamadı.")
@@ -1369,6 +1465,13 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             WHERE id = ?
         ''', (reward, reward, ad_id))
         self.db.connection.commit()
+        if self.firebase.enabled:
+            self.firebase.add('ad_views', {
+                'ad_id': ad_id,
+                'viewer_id': user_id,
+                'reward': reward,
+                'created_at': datetime.utcnow().isoformat()
+            })
 
         answer_callback_query(callback_id, f"✅ Ödül eklendi: ${reward:.2f}", True)
 
@@ -1395,6 +1498,12 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         if refunded is None:
             answer_callback_query(callback_id, "❌ İade edilemedi", True)
             return
+        if self.firebase.enabled:
+            self.firebase.upsert('ads', ad_id, {
+                'status': 'refunded',
+                'remaining_budget': 0,
+                'refunded_at': datetime.utcnow().isoformat()
+            })
         answer_callback_query(callback_id, f"✅ İade edildi: ${refunded:.2f}", True)
     
     def handle_callback_query(self, callback_query):
@@ -1457,6 +1566,10 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             
             elif data == 'start_withdrawal':
                 self.start_withdrawal_process(user_id, callback_id)
+
+            elif data == 'cancel_action':
+                self.cancel_user_action(user_id, callback_id)
+                return
             
             elif data == 'copy_ref':
                 user = self.db.get_user(user_id)
@@ -1501,7 +1614,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
 📥 `{stats['pending_withdrawals']}` bekleyen çekim
 
 📌 **Hızlı Komutlar**
-• `/addbalance USER_ID AMOUNT [REASON]`
+• `/addbalance USER_ID|@username AMOUNT [REASON]`
 • `/createtask TITLE REWARD MAX_PARTICIPANTS TYPE DESCRIPTION`
 """
 
@@ -1777,6 +1890,7 @@ You can earn rewards by completing the tasks below. Each task has its own instru
             return
         
         lang = user['language']
+        ad_summary = self.db.get_ad_budget_summary(user_id)
         
         balance_texts = {
             'tr': f"""
@@ -1790,7 +1904,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 ├ 🎯 Tamamlanan Görev: `{user['tasks_completed']}`
 ├ 💰 Toplam Kazanç: `${user['total_earned']:.2f}`
 ├ 👥 Aktif Referans: `{user['total_referrals']}`
-└ 📈 Referans Kazancı: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+├ 📈 Referans Kazancı: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+└ 📢 Reklam Bütçesi: `${ad_summary['remaining_budget']:.2f}` ({ad_summary['active_ads']} aktif)
 
 🏧 *Çekim Koşulları:*
 - Minimum çekim: `${MIN_WITHDRAW}`
@@ -1817,7 +1932,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 ├ 🎯 Tasks Completed: `{user['tasks_completed']}`
 ├ 💰 Total Earned: `${user['total_earned']:.2f}`
 ├ 👥 Active Referrals: `{user['total_referrals']}`
-└ 📈 Referral Earnings: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+├ 📈 Referral Earnings: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+└ 📢 Ad Budget: `${ad_summary['remaining_budget']:.2f}` ({ad_summary['active_ads']} active)
 
 🏧 *Withdrawal Conditions:*
 - Minimum withdrawal: `${MIN_WITHDRAW}`
@@ -1844,7 +1960,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 ├ 🎯 Выполненные задачи: `{user['tasks_completed']}`
 ├ 💰 Всего заработано: `${user['total_earned']:.2f}`
 ├ 👥 Активные рефералы: `{user['total_referrals']}`
-└ 📈 Заработок с рефералов: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+├ 📈 Заработок с рефералов: `${(user['total_earned'] * REF_TASK_COMMISSION):.2f}`
+└ 📢 Рекламный бюджет: `${ad_summary['remaining_budget']:.2f}` ({ad_summary['active_ads']} активных)
 
 🏧 *Условия вывода:*
 - Минимальный вывод: `${MIN_WITHDRAW}`
@@ -1868,6 +1985,7 @@ You can earn rewards by completing the tasks below. Each task has its own instru
             'inline_keyboard': [
                 [{'text': '🏧 Para Çek', 'callback_data': 'show_withdraw'}],
                 [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
+                [{'text': '📢 Reklam', 'callback_data': 'show_ads'}],
                 [{'text': '🎯 Görevlere Git', 'callback_data': 'show_tasks'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
@@ -1901,6 +2019,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 ⚠️ *ÖNEMLİ:*
 - TXID **zorunlu**
 - Yanlış TXID girersen işlem reddedilir
+- Minimum tutar **yok**
+- Destek: @AlperenTHE
 """,
             'en': """
 💳 *DEPOSIT*
@@ -1918,6 +2038,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 ⚠️ *IMPORTANT:*
 - TXID is **required**
 - Wrong TXID will be rejected
+- No minimum amount
+- Support: @AlperenTHE
 """,
             'ru': """
 💳 *ДЕПОЗИТ*
@@ -1935,6 +2057,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 ⚠️ *ВАЖНО:*
 - TXID **обязателен**
 - Неверный TXID будет отклонён
+- Минимальной суммы нет
+- Поддержка: @AlperenTHE
 """
         }
 
@@ -2168,6 +2292,7 @@ They will be re-enabled with a new announcement.
         # Referans kazancını hesapla
         self.db.cursor.execute('SELECT SUM(earned_amount) FROM referrals WHERE referrer_id = ?', (user_id,))
         ref_earned = self.db.cursor.fetchone()[0] or 0
+        ad_summary = self.db.get_ad_budget_summary(user_id)
         
         # Son aktiviteyi formatla
         last_active = datetime.strptime(user['last_active'], '%Y-%m-%d %H:%M:%S') if isinstance(user['last_active'], str) else user['last_active']
@@ -2189,6 +2314,7 @@ They will be re-enabled with a new announcement.
 ├ 🎯 Tamamlanan Görev: `{user['tasks_completed']}`
 ├ 👥 Aktif Referans: `{user['total_referrals']}`
 ├ 💸 Referans Kazancı: `${ref_earned:.2f}`
+├ 📢 Reklam Bütçesi: `${ad_summary['remaining_budget']:.2f}` ({ad_summary['active_ads']} aktif)
 └ 📅 Son Aktivite: `{days_active}` gün önce
 
 🎯 *Hedefleriniz:*
@@ -2220,6 +2346,7 @@ They will be re-enabled with a new announcement.
 ├ 🎯 Tasks Completed: `{user['tasks_completed']}`
 ├ 👥 Active Referrals: `{user['total_referrals']}`
 ├ 💸 Referral Earnings: `${ref_earned:.2f}`
+├ 📢 Ad Budget: `${ad_summary['remaining_budget']:.2f}` ({ad_summary['active_ads']} active)
 └ 📅 Last Active: `{days_active}` days ago
 
 🎯 *Your Targets:*
@@ -2251,6 +2378,7 @@ They will be re-enabled with a new announcement.
 ├ 🎯 Выполненные задачи: `{user['tasks_completed']}`
 ├ 👥 Активные рефералы: `{user['total_referrals']}`
 ├ 💸 Реферальный заработок: `${ref_earned:.2f}`
+├ 📢 Рекламный бюджет: `${ad_summary['remaining_budget']:.2f}` ({ad_summary['active_ads']} активных)
 └ 📅 Последняя активность: `{days_active}` дней назад
 
 🎯 *Ваши цели:*
@@ -2607,7 +2735,7 @@ ref = db.reference("/")
 ```
 
 **Collections (Suggested)**
-• `users`, `tasks`, `task_participations`, `withdrawals`, `stats`
+• `users`, `tasks`, `task_participations`, `deposits`, `withdrawals`, `stats`, `ads`, `ad_views`
 
 **Rules & ENV Details**
 • See: `FIREBASE_SETUP.md`
@@ -2661,7 +2789,7 @@ ref = db.reference("/")
 ```
 
 **Collections (Suggested)**
-• `users`, `tasks`, `task_participations`, `withdrawals`, `stats`
+• `users`, `tasks`, `task_participations`, `deposits`, `withdrawals`, `stats`, `ads`, `ad_views`
 
 **Rules & ENV Details**
 • See: `FIREBASE_SETUP.md`
@@ -2685,10 +2813,10 @@ ref = db.reference("/")
         try:
             parts = text.split()
             if len(parts) < 3:
-                send_message(admin_id, "❌ Format: /addbalance USER_ID AMOUNT [REASON]")
+                send_message(admin_id, "❌ Format: /addbalance USER_ID|@username AMOUNT [REASON]")
                 return
             
-            user_id = int(parts[1])
+            target = parts[1].lstrip("@")
             amount = float(parts[2])
             reason = " ".join(parts[3:]) if len(parts) > 3 else ""
             
@@ -2696,16 +2824,16 @@ ref = db.reference("/")
                 send_message(admin_id, "❌ Miktar pozitif olmalıdır")
                 return
             
-            user = self.db.get_user(user_id)
+            user = self.db.admin_get_user_by_id_or_username(target)
             if not user:
                 send_message(admin_id, "❌ Kullanıcı bulunamadı")
                 return
             
-            if self.db.admin_add_balance(user_id, amount, admin_id, reason):
-                send_message(admin_id, f"✅ Bakiye eklendi!\n👤 Kullanıcı: {user_id}\n💰 Miktar: ${amount}\n📝 Nedeni: {reason}")
+            if self.db.admin_add_balance(user['user_id'], amount, admin_id, reason):
+                send_message(admin_id, f"✅ Bakiye eklendi!\n👤 Kullanıcı: {user['user_id']} (@{user.get('username') or 'N/A'})\n💰 Miktar: ${amount}\n📝 Nedeni: {reason}")
                 
                 # Kullanıcıya bildirim
-                send_message(user_id, f"🎉 Bakiyenize ${amount} eklendi!\n📝 Nedeni: {reason or 'Admin bonusu'}")
+                send_message(user['user_id'], f"🎉 Bakiyenize ${amount} eklendi!\n📝 Nedeni: {reason or 'Admin bonusu'}")
             else:
                 send_message(admin_id, "❌ Bakiye eklenemedi")
         except Exception as e:
@@ -2774,23 +2902,28 @@ ref = db.reference("/")
 
         self.user_states[user_id] = {'action': 'waiting_deposit_amount'}
         answer_callback_query(callback_id, "💳 Yükleme başlatıldı")
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
+            ]
+        }
         send_message(user_id, """
 💳 *BAKİYE YÜKLEME*
 
 Lütfen yüklemek istediğiniz tutarı gönderin.
 
 Örnek: `25`
-        """)
+        """, reply_markup=keyboard)
 
     def handle_deposit_amount(self, user_id, text, user):
         """Yükleme tutarı alındı"""
         try:
             amount = float(text.replace(",", "."))
             if amount <= 0:
-                send_message(user_id, "❌ Tutar pozitif olmalıdır.")
+                send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz.")
                 return
         except ValueError:
-            send_message(user_id, "❌ Geçersiz tutar. Örnek: 25")
+            send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz.")
             return
 
         self.user_states[user_id] = {
@@ -2798,11 +2931,16 @@ Lütfen yüklemek istediğiniz tutarı gönderin.
             'deposit_amount': amount
         }
 
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
+            ]
+        }
         send_message(user_id, f"""
 ✅ Tutar alındı: **${amount:.2f}**
 
 Şimdi lütfen işlemin **TXID** bilgisini gönderin.
-        """)
+        """, reply_markup=keyboard)
 
     def handle_deposit_txid(self, user_id, text, user):
         """TXID alındı"""
@@ -2863,6 +3001,14 @@ Lütfen yüklemek istediğiniz tutarı gönderin.
         
         if reward:
             answer_callback_query(callback_id, f"✅ Görev tamamlandı!\n💰 Ödül: ${reward}\n⚡ Otomatik eklendi")
+            if self.firebase.enabled:
+                self.firebase.add('task_participations', {
+                    'task_id': task_id,
+                    'user_id': user_id,
+                    'reward': reward,
+                    'status': 'approved',
+                    'created_at': datetime.utcnow().isoformat()
+                })
         else:
             answer_callback_query(callback_id, "❌ Göreve zaten katıldın veya görev bulunamadı", True)
 
