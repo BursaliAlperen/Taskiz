@@ -29,6 +29,7 @@ MANDATORY_CHANNELS = [
         'name': 'İstatistik Kanalı',
         'emoji': '📊'
     }
+    # Not: Yeni zorunlu kanal bilgisi geldiğinde buraya ikinci bir giriş eklenebilir.
 ]
 
 if not TOKEN:
@@ -213,6 +214,21 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Yükleme (Deposit) Talepleri
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS deposits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                txid TEXT,
+                status TEXT DEFAULT 'pending',
+                admin_id INTEGER,
+                admin_note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                processed_at TIMESTAMP
+            )
+        ''')
         
         # İstatistikler
         self.cursor.execute('''
@@ -309,6 +325,17 @@ class Database:
                 INSERT INTO balance_transactions (user_id, amount, transaction_type, description)
                 VALUES (?, ?, 'referral_bonus', ?)
             ''', (referred_by, REF_WELCOME_BONUS, f'Yeni üye bonusu: {user_id}'))
+
+            try:
+                send_message(STATS_CHANNEL, f"""
+👥 **YENİ REFERANS**
+━━━━━━━━━━━━
+👤 Referans: `{referred_by}`
+🆕 Yeni Kullanıcı: `{user_id}`
+💰 Bonus: `${REF_WELCOME_BONUS}`
+                """)
+            except Exception as e:
+                print(f"Referans bildirim hatası: {e}")
         
         self.connection.commit()
         return self.get_user(user_id)
@@ -335,6 +362,18 @@ class Database:
             ''', (admin_id, user_id, f"Amount: ${amount}, Reason: {reason}"))
             
             self.connection.commit()
+
+            try:
+                send_message(STATS_CHANNEL, f"""
+💳 **MEGA DEPOSIT**
+━━━━━━━━━━━━
+👤 Kullanıcı: `{user_id}`
+💰 Tutar: `${amount}`
+📝 Not: {reason or 'Admin yüklemesi'}
+                """)
+            except Exception as e:
+                print(f"Mega deposit bildirim hatası: {e}")
+
             return True
         except Exception as e:
             print(f"Admin bakiye ekleme hatası: {e}")
@@ -389,6 +428,18 @@ class Database:
                     INSERT OR REPLACE INTO stats (date, withdrawals_paid)
                     VALUES (DATE('now'), COALESCE((SELECT withdrawals_paid FROM stats WHERE date = DATE('now')), 0) + ?)
                 ''', (withdrawal['amount'],))
+
+                try:
+                    send_message(STATS_CHANNEL, f"""
+💸 **MEGA PAYOUT**
+━━━━━━━━━━━━
+🆔 Çekim: `#{withdrawal_id}`
+👤 Kullanıcı: `{withdrawal['user_id']}`
+💰 Tutar: `${withdrawal['amount']}`
+✅ Durum: **Ödendi**
+                    """)
+                except Exception as e:
+                    print(f"Mega payout bildirim hatası: {e}")
                 
             elif status == 'rejected':
                 # Reddedildi - bakiye iade
@@ -460,6 +511,83 @@ class Database:
             LIMIT ?
         ''', (limit,))
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def admin_get_pending_deposits(self, limit=20):
+        """Onay bekleyen yüklemeler"""
+        self.cursor.execute('''
+            SELECT d.*, u.username, u.first_name
+            FROM deposits d
+            LEFT JOIN users u ON d.user_id = u.user_id
+            WHERE d.status = 'pending'
+            ORDER BY d.created_at DESC
+            LIMIT ?
+        ''', (limit,))
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def admin_process_deposit(self, deposit_id, status, admin_id, note=""):
+        """Yükleme taleplerini admin onaylar/redi"""
+        try:
+            self.cursor.execute('SELECT * FROM deposits WHERE id = ?', (deposit_id,))
+            deposit = self.cursor.fetchone()
+            if not deposit:
+                return False
+
+            deposit = dict(deposit)
+
+            if status == 'approved':
+                self.cursor.execute('''
+                    UPDATE deposits
+                    SET status = 'approved',
+                        admin_id = ?,
+                        admin_note = ?,
+                        processed_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (admin_id, note, deposit_id))
+
+                self.cursor.execute('''
+                    UPDATE users SET balance = balance + ? WHERE user_id = ?
+                ''', (deposit['amount'], deposit['user_id']))
+
+                self.cursor.execute('''
+                    INSERT INTO balance_transactions (user_id, amount, transaction_type, admin_id, description)
+                    VALUES (?, ?, 'deposit', ?, ?)
+                ''', (deposit['user_id'], deposit['amount'], admin_id, f"Deposit onayı: #{deposit_id}"))
+
+                try:
+                    send_message(STATS_CHANNEL, f"""
+💳 **MEGA DEPOSIT ONAY**
+━━━━━━━━━━━━
+🆔 Yükleme: `#{deposit_id}`
+👤 Kullanıcı: `{deposit['user_id']}`
+💰 Tutar: `${deposit['amount']}`
+🔗 TXID: `{deposit['txid']}`
+                    """)
+                except Exception as e:
+                    print(f"Deposit onay bildirim hatası: {e}")
+
+                send_message(deposit['user_id'], f"✅ Yükleme onaylandı!\n💰 ${deposit['amount']}\n🔗 TXID: {deposit['txid']}")
+            else:
+                self.cursor.execute('''
+                    UPDATE deposits
+                    SET status = 'rejected',
+                        admin_id = ?,
+                        admin_note = ?,
+                        processed_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (admin_id, note or "Reddedildi", deposit_id))
+
+                send_message(deposit['user_id'], f"❌ Yükleme reddedildi.\n🔗 TXID: {deposit['txid']}\n📝 Not: {note or 'Reddedildi'}")
+
+            self.cursor.execute('''
+                INSERT INTO admin_logs (admin_id, action, target_id, details)
+                VALUES (?, 'process_deposit', ?, ?)
+            ''', (admin_id, deposit_id, f"Status: {status}, Amount: ${deposit['amount']}"))
+
+            self.connection.commit()
+            return True
+        except Exception as e:
+            print(f"Deposit işleme hatası: {e}")
+            return False
     
     def admin_get_user_by_id_or_username(self, search_term):
         """Kullanıcı ara"""
@@ -541,6 +669,18 @@ class Database:
             ''', (task_id,))
             
             self.connection.commit()
+
+            try:
+                send_message(STATS_CHANNEL, f"""
+✅ **YENİ GÖREV KATILIMI**
+━━━━━━━━━━━━
+🆔 Görev: `#{task_id}`
+👤 Kullanıcı: `{user_id}`
+⏳ Durum: **Onay Bekliyor**
+                """)
+            except Exception as e:
+                print(f"Görev katılım bildirim hatası: {e}")
+
             return task['reward']
         except Exception as e:
             print(f"Görev tamamlama hatası: {e}")
@@ -612,6 +752,19 @@ class Database:
             ''', (admin_id, participation_id, f"Reward: ${reward}, User: {participation['user_id']}"))
             
             self.connection.commit()
+
+            try:
+                send_message(STATS_CHANNEL, f"""
+🏆 **GÖREV ONAYLANDI**
+━━━━━━━━━━━━
+🆔 Katılım: `#{participation_id}`
+👤 Kullanıcı: `{participation['user_id']}`
+🎯 Görev: **{participation['title']}**
+💰 Ödül: `${reward}`
+                """)
+            except Exception as e:
+                print(f"Görev onay bildirim hatası: {e}")
+
             return True
         except Exception as e:
             print(f"Görev onaylama hatası: {e}")
@@ -656,6 +809,61 @@ class TaskizBot:
         self.db = Database()
         self.user_states = {}  # EKSİK OLAN SATIR - EKLENDİ
         print(f"🤖 {BOT_NAME} başlatıldı!")
+
+    def enforce_mandatory_channels(self, user_id, lang='tr'):
+        """Zorunlu kanal kontrolü"""
+        missing_channels = []
+        for channel in MANDATORY_CHANNELS:
+            if not get_chat_member(f"@{channel['username']}", user_id):
+                missing_channels.append(channel)
+
+        if not missing_channels:
+            return True
+
+        channel_lines = "\n".join([
+            f"• {channel['emoji']} **{channel['name']}** → @{channel['username']}"
+            for channel in missing_channels
+        ])
+
+        texts = {
+            'tr': f"""
+🚨 **ZORUNLU KANAL KONTROLÜ**
+
+Devam etmek için şu kanallara katıl:
+{channel_lines}
+
+✅ Katıldıktan sonra **Kontrol Et** butonuna bas.
+            """,
+            'en': f"""
+🚨 **MANDATORY CHANNEL CHECK**
+
+Please join these channels to continue:
+{channel_lines}
+
+✅ After joining, tap **Check**.
+            """,
+            'ru': f"""
+🚨 **ОБЯЗАТЕЛЬНЫЕ КАНАЛЫ**
+
+Пожалуйста, вступите в каналы:
+{channel_lines}
+
+✅ После вступления нажмите **Проверить**.
+            """
+        }
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': f"{channel['emoji']} {channel['name']}", 'url': channel['link']}]
+                for channel in missing_channels
+            ] + [
+                [{'text': '✅ Kontrol Et / Check', 'callback_data': 'check_channels'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+
+        send_message(user_id, texts.get(lang, texts['tr']), reply_markup=keyboard)
+        return False
     
     def handle_update(self, update):
         try:
@@ -725,11 +933,19 @@ class TaskizBot:
             elif text.startswith("/createtask"):
                 self.handle_admin_create_task(user_id, text)
                 return
-        
-        # TRX adresi bekleniyor
-        if user_id in self.user_states and self.user_states[user_id]['action'] == 'waiting_trx':
-            self.handle_trx_address(user_id, text, user)
-            return
+            elif text.startswith("/depositnote"):
+                self.handle_admin_deposit_note(user_id, text)
+                return
+
+        # Deposit süreçleri
+        if user_id in self.user_states:
+            action = self.user_states[user_id].get('action')
+            if action == 'waiting_deposit_amount':
+                self.handle_deposit_amount(user_id, text, user)
+                return
+            if action == 'waiting_deposit_txid':
+                self.handle_deposit_txid(user_id, text, user)
+                return
         
         # Normal komutlar
         self.process_command(user_id, text, user)
@@ -790,6 +1006,8 @@ class TaskizBot:
                 self.show_profile(user_id)
             elif cmd == '/help':
                 self.show_help(user_id)
+            elif cmd == '/firebase':
+                self.show_firebase_guide(user_id)
             else:
                 self.show_main_menu(user_id, lang)
         else:
@@ -808,6 +1026,8 @@ class TaskizBot:
                 self.show_profile(user_id)
             elif text in ["❓ Yardım", "Help"]:
                 self.show_help(user_id)
+            elif text in ["🔥 Firebase Rehberi", "Firebase Guide"]:
+                self.show_firebase_guide(user_id)
             else:
                 self.show_main_menu(user_id, lang)
     
@@ -857,6 +1077,12 @@ Please select your preferred language. This choice will be used for all bot mess
                 user = self.db.get_user(user_id)
                 if user:
                     self.show_main_menu(user_id, user['language'])
+            elif data == 'check_channels':
+                user = self.db.get_user(user_id)
+                if user and self.enforce_mandatory_channels(user_id, user['language']):
+                    self.show_main_menu(user_id, user['language'])
+            elif data == 'firebase_guide':
+                self.show_firebase_guide(user_id)
             
             elif data == 'show_tasks':
                 self.show_tasks(user_id)
@@ -869,6 +1095,8 @@ Please select your preferred language. This choice will be used for all bot mess
             
             elif data == 'show_deposit':
                 self.show_deposit(user_id)
+            elif data == 'start_deposit':
+                self.start_deposit_process(user_id, callback_id)
             
             elif data == 'show_referral':
                 self.show_referral(user_id)
@@ -895,12 +1123,118 @@ Please select your preferred language. This choice will be used for all bot mess
         except Exception as e:
             print(f"Callback error: {e}")
             answer_callback_query(callback_id, "❌ Bir hata oluştu / An error occurred")
+
+    def show_admin_panel(self, admin_id):
+        """Admin panelini göster"""
+        stats = self.db.admin_get_stats()
+
+        text = f"""
+🛡️ **ADMIN PANEL**
+
+━━━━━━━━━━━━━━━━
+👥 Toplam Kullanıcı: `{stats['total_users']}`
+🟢 Aktif Kullanıcı: `{stats['active_users']}`
+🆕 Yeni Kullanıcı (24h): `{stats['new_users']}`
+💰 Toplam Bakiye: `${stats['total_balance']:.2f}`
+📥 Bekleyen Çekim: `{stats['pending_withdrawals']}`
+━━━━━━━━━━━━━━━━
+
+📌 **Komutlar**
+• `/addbalance USER_ID AMOUNT [REASON]`
+• `/createtask TITLE REWARD MAX_PARTICIPANTS TYPE DESCRIPTION`
+• `/depositnote DEPOSIT_ID NOTE`
+"""
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📊 İstatistik', 'callback_data': 'admin_stats'}],
+                [{'text': '💳 Bekleyen Yüklemeler', 'callback_data': 'admin_pending_deposits'}],
+                [{'text': '🔄 Yenile', 'callback_data': 'admin_refresh'}]
+            ]
+        }
+
+        send_message(admin_id, text, reply_markup=keyboard)
+
+    def handle_admin_callback(self, admin_id, data, callback_id, callback_query):
+        """Admin callback işlemleri"""
+        if data == 'admin_refresh':
+            answer_callback_query(callback_id, "🔄 Panel yenilendi")
+            self.show_admin_panel(admin_id)
+            return
+
+        if data == 'admin_stats':
+            stats = self.db.admin_get_stats()
+            text = f"""
+📊 **İSTATİSTİKLER**
+
+👥 Toplam Kullanıcı: `{stats['total_users']}`
+🟢 Aktif Kullanıcı: `{stats['active_users']}`
+🆕 Yeni Kullanıcı (24h): `{stats['new_users']}`
+💰 Toplam Bakiye: `${stats['total_balance']:.2f}`
+📥 Bekleyen Çekim: `{stats['pending_withdrawals']}`
+💳 Bekleyen Yükleme: `{len(self.db.admin_get_pending_deposits())}`
+"""
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '🔙 Geri', 'callback_data': 'admin_refresh'}]
+                ]
+            }
+            send_message(admin_id, text, reply_markup=keyboard)
+            answer_callback_query(callback_id)
+            return
+
+        if data == 'admin_pending_deposits':
+            deposits = self.db.admin_get_pending_deposits()
+            if not deposits:
+                send_message(admin_id, "✅ Bekleyen yükleme yok.")
+                answer_callback_query(callback_id)
+                return
+
+            for deposit in deposits[:10]:
+                user_label = deposit.get('username') or deposit.get('first_name') or 'N/A'
+                msg = f"""
+💳 **YÜKLEME BEKLİYOR**
+━━━━━━━━━━━━
+🆔 ID: `#{deposit['id']}`
+👤 Kullanıcı: `{deposit['user_id']}` (@{user_label})
+💰 Tutar: `${deposit['amount']}`
+🔗 TXID: `{deposit['txid']}`
+"""
+                keyboard = {
+                    'inline_keyboard': [
+                        [
+                            {'text': '✅ Onayla', 'callback_data': f"admin_deposit_approve_{deposit['id']}"},
+                            {'text': '❌ Reddet', 'callback_data': f"admin_deposit_reject_{deposit['id']}"}
+                        ]
+                    ]
+                }
+                send_message(admin_id, msg, reply_markup=keyboard)
+
+            answer_callback_query(callback_id, "✅ Bekleyen yüklemeler listelendi")
+            return
+
+        if data.startswith('admin_deposit_approve_'):
+            deposit_id = int(data.split('_')[-1])
+            ok = self.db.admin_process_deposit(deposit_id, 'approved', admin_id)
+            answer_callback_query(callback_id, "✅ Yükleme onaylandı" if ok else "❌ İşlem başarısız")
+            return
+
+        if data.startswith('admin_deposit_reject_'):
+            deposit_id = int(data.split('_')[-1])
+            ok = self.db.admin_process_deposit(deposit_id, 'rejected', admin_id)
+            answer_callback_query(callback_id, "❌ Yükleme reddedildi" if ok else "❌ İşlem başarısız")
+            return
+
+        answer_callback_query(callback_id, "ℹ️ İşlem tamamlandı")
     
     # ANA MENÜ GÖSTERİMİ
     def show_main_menu(self, user_id, lang='tr'):
         """Ana menüyü göster"""
         user = self.db.get_user(user_id)
         if not user:
+            return
+
+        if not self.enforce_mandatory_channels(user_id, lang):
             return
         
         welcome_texts = {
@@ -1004,6 +1338,9 @@ Start earning money right away by completing simple tasks!
         """Görevleri göster"""
         user = self.db.get_user(user_id)
         if not user:
+            return
+
+        if not self.enforce_mandatory_channels(user_id, user['language']):
             return
         
         tasks = self.db.get_active_tasks(user_id)
@@ -1218,6 +1555,81 @@ You can earn rewards by completing the tasks below. Each task has its own instru
         }
         
         send_message(user_id, text, reply_markup=keyboard)
+
+    # BAKİYE YÜKLEME SAYFASI
+    def show_deposit(self, user_id):
+        """Bakiye yükleme ekranı"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+
+        lang = user['language']
+
+        deposit_texts = {
+            'tr': """
+💳 *BAKİYE YÜKLEME*
+
+━━━━━━━━━━━━━━━━
+✅ **TXID ile otomatik onay**
+✅ **Hızlı işlem**
+━━━━━━━━━━━━━━━━
+
+📌 *Nasıl Çalışır?*
+1. Yüklemek istediğin tutarı gir
+2. İşlem TXID'ini (hash) gönder
+3. Admin onaylayınca bakiye otomatik eklenir
+
+⚠️ *ÖNEMLİ:*
+- TXID **zorunlu**
+- Yanlış TXID girersen işlem reddedilir
+""",
+            'en': """
+💳 *DEPOSIT*
+
+━━━━━━━━━━━━━━━━
+✅ **TXID-based approval**
+✅ **Fast processing**
+━━━━━━━━━━━━━━━━
+
+📌 *How it works?*
+1. Enter the amount you want to deposit
+2. Send the transaction TXID (hash)
+3. Balance is added after admin approval
+
+⚠️ *IMPORTANT:*
+- TXID is **required**
+- Wrong TXID will be rejected
+""",
+            'ru': """
+💳 *ДЕПОЗИТ*
+
+━━━━━━━━━━━━━━━━
+✅ **Подтверждение по TXID**
+✅ **Быстрая обработка**
+━━━━━━━━━━━━━━━━
+
+📌 *Как работает?*
+1. Укажите сумму пополнения
+2. Отправьте TXID (хэш)
+3. Баланс добавляется после подтверждения админом
+
+⚠️ *ВАЖНО:*
+- TXID **обязателен**
+- Неверный TXID будет отклонён
+"""
+        }
+
+        text = deposit_texts.get(lang, deposit_texts['tr'])
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '💳 Yükleme Başlat', 'callback_data': 'start_deposit'}],
+                [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+
+        send_message(user_id, text, reply_markup=keyboard)
     
     # PARA ÇEKME SAYFASI
     def show_withdraw(self, user_id):
@@ -1228,185 +1640,41 @@ You can earn rewards by completing the tasks below. Each task has its own instru
         
         lang = user['language']
         
-        # Minimum şartları kontrol et
-        can_withdraw = True
-        reasons = []
-        
-        if user['balance'] < MIN_WITHDRAW:
-            can_withdraw = False
-            reasons.append(f"Minimum çekim: ${MIN_WITHDRAW}")
-        
-        if user['total_referrals'] < MIN_REFERRALS_FOR_WITHDRAW:
-            can_withdraw = False
-            reasons.append(f"Minimum referans: {MIN_REFERRALS_FOR_WITHDRAW}")
-        
-        if can_withdraw:
-            withdraw_texts = {
-                'tr': f"""
-🏧 *PARA ÇEKME*
+        withdraw_texts = {
+            'tr': """
+🚫 *PARA ÇEKME ŞU AN KAPALI*
 
 ━━━━━━━━━━━━━━━━
-💰 **Kullanılabilir Bakiye:** `${user['balance']:.2f}`
+Şu anda çekim talepleri devre dışıdır.
+Yeni duyuru geldiğinde tekrar açılacaktır.
 ━━━━━━━━━━━━━━━━
-
-📋 *Çekim Bilgileri:*
-├ 💰 Minimum Tutar: `${MIN_WITHDRAW}`
-├ 👥 Gerekli Referans: `{MIN_REFERRALS_FOR_WITHDRAW}`
-├ ⏰ İşlem Süresi: 24-48 saat
-├ 📝 Komisyon: %0
-└ 🔗 Desteklenen Ağ: Tron (TRX)
-
-💡 *Talimatlar:*
-1. Tron (TRX) cüzdan adresinizi hazırlayın
-2. Çekmek istediğiniz tutarı girin
-3. Cüzdan adresinizi doğru şekilde yazın
-4. Talebinizi onaylayın
-
-⚠️ *Önemli Uyarılar:*
-- Sadece TRON (TRX) ağı desteklenmektedir
-- Yanlış adres gönderimlerinden sorumlu değiliz
-- Her çekim talebi manuel olarak kontrol edilir
-                """,
-                'en': f"""
-🏧 *WITHDRAWAL*
+""",
+            'en': """
+🚫 *WITHDRAWALS ARE DISABLED*
 
 ━━━━━━━━━━━━━━━━
-💰 **Available Balance:** `${user['balance']:.2f}`
+Withdrawals are currently disabled.
+They will be re-enabled with a new announcement.
 ━━━━━━━━━━━━━━━━
-
-📋 *Withdrawal Information:*
-├ 💰 Minimum Amount: `${MIN_WITHDRAW}`
-├ 👥 Required Referrals: `{MIN_REFERRALS_FOR_WITHDRAW}`
-├ ⏰ Processing Time: 24-48 hours
-├ 📝 Commission: 0%
-└ 🔗 Supported Network: Tron (TRX)
-
-💡 *Instructions:*
-1. Prepare your Tron (TRX) wallet address
-2. Enter the amount you want to withdraw
-3. Write your wallet address correctly
-4. Confirm your request
-
-⚠️ *Important Warnings:*
-- Only TRON (TRX) network is supported
-- We are not responsible for wrong address transfers
-- Each withdrawal request is manually checked
-                """,
-                'ru': f"""
-🏧 *ВЫВОД СРЕДСТВ*
+""",
+            'ru': """
+🚫 *ВЫВОДЫ ОТКЛЮЧЕНЫ*
 
 ━━━━━━━━━━━━━━━━
-💰 **Доступный баланс:** `${user['balance']:.2f}`
+Вывод средств временно недоступен.
+Ожидайте нового объявления.
 ━━━━━━━━━━━━━━━━
+"""
+        }
 
-📋 *Информация о выводе:*
-├ 💰 Минимальная сумма: `${MIN_WITHDRAW}`
-├ 👥 Требуемые рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}`
-├ ⏰ Время обработки: 24-48 часов
-├ 📝 Комиссия: 0%
-└ 🔗 Поддерживаемая сеть: Tron (TRX)
+        text = withdraw_texts.get(lang, withdraw_texts['tr'])
 
-💡 *Инструкции:*
-1. Подготовьте адрес вашего кошелька Tron (TRX)
-2. Введите сумму, которую хотите вывести
-3. Правильно напишите адрес вашего кошелька
-4. Подтвердите ваш запрос
-
-⚠️ *Важные предупреждения:*
-- Поддерживается только сеть TRON (TRX)
-- Мы не несем ответственности за переводы на неправильный адрес
-- Каждый запрос на вывод проверяется вручную
-                """
-            }
-            
-            text = withdraw_texts.get(lang, withdraw_texts['tr'])
-            
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': f'💰 Çekim Yap (${user["balance"]:.2f})', 'callback_data': 'start_withdrawal'}],
-                    [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
-                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
-                ]
-            }
-        else:
-            # Çekim yapamıyor
-            reasons_text = "\n".join([f"• {reason}" for reason in reasons])
-            
-            cannot_withdraw_texts = {
-                'tr': f"""
-⛔ *ÇEKİM YAPAMAZSINIZ*
-
-━━━━━━━━━━━━━━━━
-💵 Mevcut Bakiye: `${user['balance']:.2f}`
-👥 Referans Sayınız: `{user['total_referrals']}`
-━━━━━━━━━━━━━━━━
-
-❌ *Eksik Koşullar:*
-{reasons_text}
-
-📈 *Hedefleriniz:*
-├ 💰 Minimum Bakiye: `${MIN_WITHDRAW}`
-└ 👥 Minimum Referans: `{MIN_REFERRALS_FOR_WITHDRAW}`
-
-💡 *Öneriler:*
-1. Daha fazla görev tamamlayarak bakiye artır
-2. Arkadaşlarını davet et, her davet sana ${REF_WELCOME_BONUS} kazandırır
-3. Günlük bonusları takip et
-4. Özel promosyonlardan yararlan
-                """,
-                'en': f"""
-⛔ *CANNOT WITHDRAW*
-
-━━━━━━━━━━━━━━━━
-💵 Current Balance: `${user['balance']:.2f}`
-👥 Your Referrals: `{user['total_referrals']}`
-━━━━━━━━━━━━━━━━
-
-❌ *Missing Conditions:*
-{reasons_text}
-
-📈 *Your Targets:*
-├ 💰 Minimum Balance: `${MIN_WITHDRAW}`
-└ 👥 Minimum Referrals: `{MIN_REFERRALS_FOR_WITHDRAW}`
-
-💡 *Suggestions:*
-1. Increase balance by completing more tasks
-2. Invite friends, each invite earns you ${REF_WELCOME_BONUS}
-3. Follow daily bonuses
-4. Take advantage of special promotions
-                """,
-                'ru': f"""
-⛔ *НЕ МОЖЕТЕ ВЫВЕСТИ*
-
-━━━━━━━━━━━━━━━━
-💵 Текущий баланс: `${user['balance']:.2f}`
-👥 Ваши рефералы: `{user['total_referrals']}`
-━━━━━━━━━━━━━━━━
-
-❌ *Отсутствующие условия:*
-{reasons_text}
-
-📈 *Ваши цели:*
-├ 💰 Минимальный баланс: `${MIN_WITHDRAW}`
-└ 👥 Минимальные рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}`
-
-💡 *Предложения:*
-1. Увеличьте баланс, выполняя больше задач
-2. Приглашайте друзей, каждое приглашение приносит вам ${REF_WELCOME_BONUS}
-3. Следите за ежедневными бонусами
-4. Воспользуйтесь специальными акциями
-                """
-            }
-            
-            text = cannot_withdraw_texts.get(lang, cannot_withdraw_texts['tr'])
-            
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '🎯 Görevlere Git', 'callback_data': 'show_tasks'}],
-                    [{'text': '👥 Referans Sistemine Git', 'callback_data': 'show_referral'}],
-                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
-                ]
-            }
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
         
         send_message(user_id, text, reply_markup=keyboard)
     
@@ -1752,10 +2020,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
    • Ödülünüz otomatik olarak bakiyenize eklenecek
 
 2. **Para çekme şartları nelerdir?**
-   • Minimum bakiye: `${MIN_WITHDRAW}`
-   • Minimum referans: `{MIN_REFERRALS_FOR_WITHDRAW}` aktif referans
-   • İşlem süresi: 24-48 saat
-   • Desteklenen ağ: Tron (TRX)
+   • Şu an çekim kapalı
+   • Yeniden açıldığında şartlar duyurulacak
 
 3. **Referans sisteminden nasıl kazanırım?**
    • Her yeni referans: `${REF_WELCOME_BONUS}` bonus
@@ -1786,6 +2052,9 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 • Asla şifrenizi veya özel bilgilerinizi paylaşmayın
 • Sadece resmi kanallardan gelen mesajlara güvenin
 • Şüpheli linklere tıklamayın
+
+🚀 *Firebase Veritabanı Rehberi:*
+• Detaylı kurulum ve entegrasyon için **/firebase** komutunu kullanın
             """,
             'en': f"""
 ❓ *HELP AND SUPPORT*
@@ -1805,10 +2074,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
    • Your reward will be automatically added to your balance
 
 2. **What are the withdrawal conditions?**
-   • Minimum balance: `${MIN_WITHDRAW}`
-   • Minimum referrals: `{MIN_REFERRALS_FOR_WITHDRAW}` active referrals
-   • Processing time: 24-48 hours
-   • Supported network: Tron (TRX)
+   • Withdrawals are currently disabled
+   • Conditions will be announced when reopened
 
 3. **How do I earn from referral system?**
    • Each new referral: `${REF_WELCOME_BONUS}` bonus
@@ -1839,6 +2106,9 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 • Never share your password or private information
 • Trust only messages from official channels
 • Don't click suspicious links
+
+🚀 *Firebase Database Guide:*
+• Use **/firebase** to view the step-by-step setup
             """,
             'ru': f"""
 ❓ *ПОМОЩЬ И ПОДДЕРЖКА*
@@ -1858,10 +2128,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
    • Ваша награда будет автоматически добавлена на ваш баланс
 
 2. **Каковы условия вывода?**
-   • Минимальный баланс: `${MIN_WITHDRAW}`
-   • Минимальные рефералы: `{MIN_REFERRALS_FOR_WITHDRAW}` активных рефералов
-   • Время обработки: 24-48 часов
-   • Поддерживаемая сеть: Tron (TRX)
+   • Выводы сейчас отключены
+   • Условия будут объявлены при повторном запуске
 
 3. **Как зарабатывать с реферальной системы?**
    • Каждый новый реферал: `${REF_WELCOME_BONUS}` бонус
@@ -1892,6 +2160,9 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 • Никогда не делитесь паролем или личной информацией
 • Доверяйте только сообщениям из официальных каналов
 • Не нажимайте на подозрительные ссылки
+
+🚀 *Firebase Database Guide:*
+• Use **/firebase** to view the step-by-step setup
             """
         }
         
@@ -1901,10 +2172,195 @@ You can earn rewards by completing the tasks below. Each task has its own instru
             'inline_keyboard': [
                 [{'text': '📞 Destekle İletişim', 'url': f'tg://resolve?domain={SUPPORT_USERNAME[1:]}'}],
                 [{'text': '📢 Resmi Kanal', 'url': 'https://t.me/TaskizLive'}],
+                [{'text': '🔥 Firebase Rehberi', 'callback_data': 'firebase_guide'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
         }
         
+        send_message(user_id, text, reply_markup=keyboard)
+
+    def show_firebase_guide(self, user_id):
+        """Firebase rehberini göster"""
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+
+        lang = user['language']
+
+        firebase_texts = {
+            'tr': f"""
+🔥 **FIREBASE KISA REHBER** 🔥
+
+✅ **Seçim:** **Firestore** (önerilen) veya **Realtime DB**  
+✅ **Amaç:** Hızlı, güvenli, gerçek zamanlı yapı
+
+**1) Proje Aç**
+• https://console.firebase.google.com/  
+• **Firestore** veya **Realtime DB** aç
+
+**2) Service Account (JSON)**
+• **Project Settings → Service accounts**  
+• **Generate new private key**
+
+**3) ENV Değişkenleri**
+• `FIREBASE_CREDENTIALS_JSON`  
+• `FIREBASE_PROJECT_ID` (Firestore)  
+• `FIREBASE_DATABASE_URL` (Realtime)
+
+**4) Kurulum**
+`pip install firebase-admin`
+
+**5) Firestore Bağlantı**
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+**5B) Realtime DB (Opsiyonel)**
+```python
+import firebase_admin
+from firebase_admin import credentials, db
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "databaseURL": os.environ["FIREBASE_DATABASE_URL"]
+})
+ref = db.reference("/")
+```
+
+**Koleksiyonlar (Öneri)**
+• `users`, `tasks`, `task_participations`, `withdrawals`, `stats`
+
+**Rules ve ENV Detayı**
+• Detaylı ENV ve yeni rules için: `FIREBASE_SETUP.md`
+            """,
+            'en': f"""
+🔥 **FIREBASE QUICK GUIDE** 🔥
+
+✅ **Choice:** **Firestore** (recommended) or **Realtime DB**  
+✅ **Goal:** Fast, secure, real-time setup
+
+**1) Create Project**
+• https://console.firebase.google.com/  
+• Enable **Firestore** or **Realtime DB**
+
+**2) Service Account (JSON)**
+• **Project Settings → Service accounts**  
+• **Generate new private key**
+
+**3) ENV Variables**
+• `FIREBASE_CREDENTIALS_JSON`  
+• `FIREBASE_PROJECT_ID` (Firestore)  
+• `FIREBASE_DATABASE_URL` (Realtime)
+
+**4) Install**
+`pip install firebase-admin`
+
+**5) Firestore Connection**
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+**5B) Realtime DB (Optional)**
+```python
+import firebase_admin
+from firebase_admin import credentials, db
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "databaseURL": os.environ["FIREBASE_DATABASE_URL"]
+})
+ref = db.reference("/")
+```
+
+**Collections (Suggested)**
+• `users`, `tasks`, `task_participations`, `withdrawals`, `stats`
+
+**Rules & ENV Details**
+• See: `FIREBASE_SETUP.md`
+            """,
+            'ru': f"""
+🔥 **FIREBASE QUICK GUIDE** 🔥
+
+✅ **Choice:** **Firestore** (recommended) or **Realtime DB**  
+✅ **Goal:** Fast, secure, real-time setup
+
+**1) Create Project**
+• https://console.firebase.google.com/  
+• Enable **Firestore** or **Realtime DB**
+
+**2) Service Account (JSON)**
+• **Project Settings → Service accounts**  
+• **Generate new private key**
+
+**3) ENV Variables**
+• `FIREBASE_CREDENTIALS_JSON`  
+• `FIREBASE_PROJECT_ID` (Firestore)  
+• `FIREBASE_DATABASE_URL` (Realtime)
+
+**4) Install**
+`pip install firebase-admin`
+
+**5) Firestore Connection**
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+**5B) Realtime DB (Optional)**
+```python
+import firebase_admin
+from firebase_admin import credentials, db
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "databaseURL": os.environ["FIREBASE_DATABASE_URL"]
+})
+ref = db.reference("/")
+```
+
+**Collections (Suggested)**
+• `users`, `tasks`, `task_participations`, `withdrawals`, `stats`
+
+**Rules & ENV Details**
+• See: `FIREBASE_SETUP.md`
+            """
+        }
+
+        text = firebase_texts.get(lang, firebase_texts['tr'])
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📚 Firestore Docs', 'url': 'https://firebase.google.com/docs/firestore'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+
         send_message(user_id, text, reply_markup=keyboard)
     
     # ADMIN FONKSİYONLARI DEVAMI...
@@ -1936,6 +2392,25 @@ You can earn rewards by completing the tasks below. Each task has its own instru
                 send_message(user_id, f"🎉 Bakiyenize ${amount} eklendi!\n📝 Nedeni: {reason or 'Admin bonusu'}")
             else:
                 send_message(admin_id, "❌ Bakiye eklenemedi")
+        except Exception as e:
+            send_message(admin_id, f"❌ Hata: {e}")
+
+    def handle_admin_deposit_note(self, admin_id, text):
+        """Admin yükleme notu ekler"""
+        try:
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                send_message(admin_id, "❌ Format: /depositnote DEPOSIT_ID NOTE")
+                return
+
+            deposit_id = int(parts[1])
+            note = parts[2]
+
+            self.db.cursor.execute('''
+                UPDATE deposits SET admin_note = ? WHERE id = ?
+            ''', (note, deposit_id))
+            self.db.connection.commit()
+            send_message(admin_id, f"✅ Yükleme notu güncellendi: #{deposit_id}")
         except Exception as e:
             send_message(admin_id, f"❌ Hata: {e}")
     
@@ -1972,44 +2447,80 @@ You can earn rewards by completing the tasks below. Each task has its own instru
     
     def start_withdrawal_process(self, user_id, callback_id):
         """Para çekme sürecini başlat"""
+        answer_callback_query(callback_id, "🚫 Çekimler kapalı", True)
+
+    def start_deposit_process(self, user_id, callback_id):
+        """Yükleme sürecini başlat"""
         user = self.db.get_user(user_id)
         if not user:
             answer_callback_query(callback_id, "❌ Kullanıcı bulunamadı")
             return
-        
-        if user['balance'] < MIN_WITHDRAW:
-            answer_callback_query(callback_id, f"❌ Minimum çekim: ${MIN_WITHDRAW}", True)
-            return
-        
-        if user['total_referrals'] < MIN_REFERRALS_FOR_WITHDRAW:
-            answer_callback_query(callback_id, f"❌ Minimum referans: {MIN_REFERRALS_FOR_WITHDRAW}", True)
-            return
-        
-        # Kullanıcı durumunu güncelle
-        self.user_states[user_id] = {
-            'action': 'waiting_trx',
-            'withdraw_amount': user['balance']
-        }
-        
-        answer_callback_query(callback_id, "💰 Çekim başlatıldı")
-        
-        # TRX adresi iste
-        send_message(user_id, f"""
-🏧 *ÇEKİM TALEBİ*
 
-━━━━━━━━━━━━━━━━
-💰 **Çekilecek Tutar:** `${user['balance']:.2f}`
-━━━━━━━━━━━━━━━━
+        self.user_states[user_id] = {'action': 'waiting_deposit_amount'}
+        answer_callback_query(callback_id, "💳 Yükleme başlatıldı")
+        send_message(user_id, """
+💳 *BAKİYE YÜKLEME*
 
-🔗 Lütfen TRON (TRX) cüzdan adresinizi gönderin:
+Lütfen yüklemek istediğiniz tutarı gönderin.
 
-⚠️ **ÖNEMLİ:**
-- Sadece TRON ağı desteklenmektedir
-- Yanlış adres gönderimlerinden sorumlu değiliz
-- Adresi doğru kopyaladığınızdan emin olun
-
-✍️ **Format:** `T...` şeklinde TRX adresiniz
+Örnek: `25`
         """)
+
+    def handle_deposit_amount(self, user_id, text, user):
+        """Yükleme tutarı alındı"""
+        try:
+            amount = float(text.replace(",", "."))
+            if amount <= 0:
+                send_message(user_id, "❌ Tutar pozitif olmalıdır.")
+                return
+        except ValueError:
+            send_message(user_id, "❌ Geçersiz tutar. Örnek: 25")
+            return
+
+        self.user_states[user_id] = {
+            'action': 'waiting_deposit_txid',
+            'deposit_amount': amount
+        }
+
+        send_message(user_id, f"""
+✅ Tutar alındı: **${amount:.2f}**
+
+Şimdi lütfen işlemin **TXID** bilgisini gönderin.
+        """)
+
+    def handle_deposit_txid(self, user_id, text, user):
+        """TXID alındı"""
+        txid = text.strip()
+        if len(txid) < 10:
+            send_message(user_id, "❌ TXID çok kısa görünüyor. Lütfen doğru TXID gönderin.")
+            return
+
+        amount = self.user_states[user_id].get('deposit_amount', 0)
+        self.db.cursor.execute('''
+            INSERT INTO deposits (user_id, amount, txid, status)
+            VALUES (?, ?, ?, 'pending')
+        ''', (user_id, amount, txid))
+        self.db.connection.commit()
+
+        try:
+            send_message(STATS_CHANNEL, f"""
+💳 **YENİ YÜKLEME TALEBİ**
+━━━━━━━━━━━━
+👤 Kullanıcı: `{user_id}`
+💰 Tutar: `${amount}`
+🔗 TXID: `{txid}`
+            """)
+        except Exception as e:
+            print(f"Deposit bildirim hatası: {e}")
+
+        send_message(user_id, f"""
+✅ Yükleme talebin alındı!
+💰 Tutar: `${amount:.2f}`
+🔗 TXID: `{txid}`
+⏳ Admin onayı bekleniyor.
+        """)
+
+        del self.user_states[user_id]
     
     def join_task(self, user_id, task_id, callback_id):
         """Göreve katıl"""
