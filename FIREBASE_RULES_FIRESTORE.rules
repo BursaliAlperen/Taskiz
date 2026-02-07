@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    function validString(field, min, max) {
+      return field is string && field.size() >= min && field.size() <= max;
+    }
+    function validAmount(amount, min, max) {
+      return amount is number && amount >= min && amount <= max;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          "username", "first_name", "last_name", "language", "last_active"
+        ]);
+      allow delete: if false;
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /task_participations/{participationId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.user_id == request.auth.uid);
+      allow create: if isSignedIn() &&
+        request.resource.data.user_id == request.auth.uid &&
+        validString(request.resource.data.task_id, 1, 128);
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /deposits/{depositId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.user_id == request.auth.uid);
+      allow create: if isSignedIn() &&
+        request.resource.data.user_id == request.auth.uid &&
+        validAmount(request.resource.data.amount, 1, 1000000) &&
+        validString(request.resource.data.txid, 4, 128);
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /withdrawals/{withdrawalId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /stats/{statId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+  }
+}
