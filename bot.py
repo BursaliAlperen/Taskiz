@@ -56,6 +56,11 @@ REF_TASK_COMMISSION = 0.25
 # Flask App
 app = Flask(__name__)
 
+# Sağlık kontrolü için basit endpoint
+@app.route("/", methods=["GET"])
+def healthcheck():
+    return jsonify({"status": "ok"})
+
 # Telegram API Fonksiyonları
 def send_message(chat_id, text, reply_markup=None, parse_mode='Markdown'):
     url = BASE_URL + "sendMessage"
@@ -2660,5 +2665,11 @@ def run_polling():
             bot.handle_update(update)
         time.sleep(1)
 
+def run_web():
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
+
 if __name__ == "__main__":
-    run_polling()
+    polling_thread = threading.Thread(target=run_polling, daemon=True)
+    polling_thread.start()
+    run_web()
