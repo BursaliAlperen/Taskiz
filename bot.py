@@ -132,6 +132,22 @@ def get_chat_member(chat_id, user_id):
     except:
         return False
 
+def get_updates(offset=None, timeout=30):
+    url = BASE_URL + "getUpdates"
+    params = {
+        'timeout': timeout,
+    }
+    if offset is not None:
+        params['offset'] = offset
+    try:
+        response = requests.get(url, params=params, timeout=timeout + 5)
+        data = response.json()
+        if data.get('ok'):
+            return data.get('result', [])
+    except Exception as e:
+        print(f"❌ Update alma hatası: {e}")
+    return []
+
 # Firebase helper
 class FirebaseClient:
     def __init__(self):
@@ -2586,3 +2602,63 @@ firebase_admin.initialize_app(cred, {
     "projectId": os.environ["FIREBASE_PROJECT_ID"]
 })
 db = firestore.client()
+```
+
+✅ Kurulum tamam! Artık botunuz Firebase ile çalışmaya hazır.
+            """,
+            'en': f"""
+🔥 **FIREBASE QUICK GUIDE** 🔥
+
+✅ **Choice:** **Firestore** (recommended) or **Realtime DB**  
+✅ **Goal:** Fast, secure, real-time setup
+
+**1) Create Project**
+• https://console.firebase.google.com/  
+• Enable **Firestore** or **Realtime DB**
+
+**2) Service Account (JSON)**
+• **Project Settings → Service accounts**  
+• **Generate new private key**
+
+**3) ENV Variables**
+• `FIREBASE_CREDENTIALS_JSON`  
+• `FIREBASE_PROJECT_ID` (Firestore)  
+• `FIREBASE_DATABASE_URL` (Realtime)
+
+**4) Install**
+`pip install firebase-admin`
+
+**5) Firestore Connection**
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+✅ Setup complete! Your bot is ready to use Firebase.
+            """
+        }
+
+        text = firebase_texts.get(lang, firebase_texts['tr'])
+        send_message(user_id, text, parse_mode="Markdown")
+
+def run_polling():
+    bot = TaskizBot()
+    offset = None
+    while True:
+        updates = get_updates(offset=offset, timeout=30)
+        for update in updates:
+            update_id = update.get('update_id')
+            if update_id is not None:
+                offset = update_id + 1
+            bot.handle_update(update)
+        time.sleep(1)
+
+if __name__ == "__main__":
+    run_polling()
