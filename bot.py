@@ -2586,3 +2586,48 @@ firebase_admin.initialize_app(cred, {
     "projectId": os.environ["FIREBASE_PROJECT_ID"]
 })
 db = firestore.client()
+```
+
+✅ Kurulum tamam! Artık botunuz Firebase ile çalışmaya hazır.
+            """,
+            'en': f"""
+🔥 **FIREBASE QUICK GUIDE** 🔥
+
+✅ **Choice:** **Firestore** (recommended) or **Realtime DB**  
+✅ **Goal:** Fast, secure, real-time setup
+
+**1) Create Project**
+• https://console.firebase.google.com/  
+• Enable **Firestore** or **Realtime DB**
+
+**2) Service Account (JSON)**
+• **Project Settings → Service accounts**  
+• **Generate new private key**
+
+**3) ENV Variables**
+• `FIREBASE_CREDENTIALS_JSON`  
+• `FIREBASE_PROJECT_ID` (Firestore)  
+• `FIREBASE_DATABASE_URL` (Realtime)
+
+**4) Install**
+`pip install firebase-admin`
+
+**5) Firestore Connection**
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+import json
+
+cred = credentials.Certificate(json.loads(os.environ["FIREBASE_CREDENTIALS_JSON"]))
+firebase_admin.initialize_app(cred, {
+    "projectId": os.environ["FIREBASE_PROJECT_ID"]
+})
+db = firestore.client()
+```
+
+✅ Setup complete! Your bot is ready to use Firebase.
+            """
+        }
+
+        text = firebase_texts.get(lang, firebase_texts['tr'])
+        send_message(user_id, text, parse_mode="Markdown")
