@@ -2,7 +2,7 @@ import os
 import time
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import threading
 import sqlite3
 from flask import Flask, jsonify, request
@@ -31,6 +31,7 @@ MANDATORY_CHANNELS = [
         'name': 'İstatistik Kanalı',
         'emoji': '📊'
     }
+    # Not: Yeni zorunlu kanal bilgisi geldiğinde buraya ikinci bir giriş eklenebilir.
 ]
 
 if not TOKEN:
@@ -44,7 +45,7 @@ FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "")
 # Dil Ayarları - SADECE 2 DİL
 SUPPORTED_LANGUAGES = {
     'tr': {'name': 'Türkçe', 'flag': '🇹🇷'},
-    'en': {'name': 'English', 'flag': '🇺🇸'}
+    'en': {'name': 'English', 'flag': '🇺🇸'},
 }
 
 # Sistem Ayarları
@@ -1002,7 +1003,7 @@ class Database:
 class TaskizBot:
     def __init__(self):
         self.db = Database()
-        self.user_states = {}
+        self.user_states = {}  # EKSİK OLAN SATIR - EKLENDİ
         self.firebase = FirebaseClient()
         if self.firebase.enabled:
             self.sync_tasks_to_firebase()
@@ -1062,8 +1063,8 @@ Please join these channels to continue:
                 [{'text': f"{channel['emoji']} {channel['name']}", 'url': channel['link']}]
                 for channel in missing_channels
             ] + [
-                [{'text': '✅ Kontrol Et' if lang == 'tr' else '✅ Check', 'callback_data': 'check_channels'}],
-                [{'text': '🏠 Ana Menü' if lang == 'tr' else '🏠 Main Menu', 'callback_data': 'main_menu'}]
+                [{'text': '✅ Kontrol Et / Check', 'callback_data': 'check_channels'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
         }
 
@@ -1074,8 +1075,8 @@ Please join these channels to continue:
         if user_id in self.user_states:
             del self.user_states[user_id]
         if callback_id:
-            answer_callback_query(callback_id, "❌ İşlem iptal edildi" if self.db.get_user(user_id)['language'] == 'tr' else "❌ Action cancelled")
-        send_message(user_id, "❌ İşlem iptal edildi. Ana menüye dönebilirsiniz." if self.db.get_user(user_id)['language'] == 'tr' else "❌ Action cancelled. You can return to main menu.")
+            answer_callback_query(callback_id, "❌ İşlem iptal edildi")
+        send_message(user_id, "❌ İşlem iptal edildi. Ana menüye dönebilirsiniz.")
     
     def handle_update(self, update):
         try:
@@ -1193,6 +1194,40 @@ Please join these channels to continue:
         # Normal komutlar
         self.process_command(user_id, text, user)
     
+    def handle_trx_address(self, user_id, text, user):
+        """TRX adresi alındığında"""
+        if user_id in self.user_states:
+            amount = self.user_states[user_id].get('withdraw_amount', 0)
+            
+            # Çekim kaydı
+            self.db.cursor.execute('''
+                INSERT INTO withdrawals (user_id, amount, trx_address, status)
+                VALUES (?, ?, ?, 'pending')
+            ''', (user_id, amount, text, 'pending'))
+            
+            # Bakiye düş
+            self.db.cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
+            self.db.connection.commit()
+            
+            # GRUP BİLDİRİMİ: ÇEKİM TALEBİ
+            group_msg = f"""
+🏧 *YENİ ÇEKİM TALEBİ*
+━━━━━━━━━━━━
+👤 {user['first_name']}
+💰 ${amount}
+🔗 TRX: `{text[:10]}...`
+⏰ {datetime.now().strftime('%H:%M')}
+            """
+            try:
+                send_message(STATS_CHANNEL, group_msg)
+            except:
+                pass
+            
+            send_message(user_id, f"✅ Çekim talebin alındı!\n💰 ${amount}\n⏳ 24-48 saat")
+            del self.user_states[user_id]
+            time.sleep(1)
+            self.show_main_menu(user_id, user['language'])
+    
     def process_command(self, user_id, text, user):
         """Normal komutları işle"""
         lang = user['language']
@@ -1223,23 +1258,23 @@ Please join these channels to continue:
                 self.show_main_menu(user_id, lang)
         else:
             # Basit buton işlemleri
-            if text in ["🎯 Görevler", "🎯 Tasks"]:
+            if text in ["🎯 Görevler", "Tasks"]:
                 self.show_tasks(user_id)
-            elif text in ["💰 Bakiye", "💰 Balance"]:
+            elif text in ["💰 Bakiye", "Balance"]:
                 self.show_balance(user_id)
-            elif text in ["🏧 Çek", "🏧 Withdraw"]:
+            elif text in ["🏧 Çek", "Withdraw"]:
                 self.show_withdraw(user_id)
-            elif text in ["💳 Yükle", "💳 Deposit"]:
+            elif text in ["💳 Yükle", "Deposit"]:
                 self.show_deposit(user_id)
             elif text in ["📢 Reklam", "📢 Ads"]:
                 self.show_ads_menu(user_id)
-            elif text in ["👥 Davet", "👥 Referral"]:
+            elif text in ["👥 Davet", "Referral"]:
                 self.show_referral(user_id)
-            elif text in ["👤 Profil", "👤 Profile"]:
+            elif text in ["👤 Profil", "Profile"]:
                 self.show_profile(user_id)
-            elif text in ["❓ Yardım", "❓ Help"]:
+            elif text in ["❓ Yardım", "Help"]:
                 self.show_help(user_id)
-            elif text in ["🔥 Firebase Rehberi", "🔥 Firebase Guide"]:
+            elif text in ["🔥 Firebase Rehberi", "Firebase Guide"]:
                 self.show_firebase_guide(user_id)
             elif text in ["🛡️ Admin Panel"] and str(user_id) in ADMIN_IDS:
                 self.show_admin_panel(user_id)
@@ -1312,13 +1347,13 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         if not user:
             return
         self.user_states[user_id] = {'action': 'waiting_ad_poster'}
-        answer_callback_query(callback_id, "📢 Reklam başlatıldı" if user['language'] == 'tr' else "📢 Ad creation started")
+        answer_callback_query(callback_id, "📢 Reklam başlatıldı")
         keyboard = {
             'inline_keyboard': [
-                [{'text': '❌ İptal Et' if user['language'] == 'tr' else '❌ Cancel', 'callback_data': 'cancel_action'}]
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
             ]
         }
-        send_message(user_id, "🖼️ Poster görsel URL'sini veya file_id gönder." if user['language'] == 'tr' else "🖼️ Send poster image URL or file_id.", reply_markup=keyboard)
+        send_message(user_id, "🖼️ Poster görsel URL'sini veya file_id gönder.", reply_markup=keyboard)
 
     def handle_ad_poster(self, user_id, text, user):
         self.user_states[user_id] = {
@@ -1327,43 +1362,43 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         }
         keyboard = {
             'inline_keyboard': [
-                [{'text': '❌ İptal Et' if user['language'] == 'tr' else '❌ Cancel', 'callback_data': 'cancel_action'}]
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
             ]
         }
-        send_message(user_id, "🔗 Reklam linkini gönder." if user['language'] == 'tr' else "🔗 Send ad link.", reply_markup=keyboard)
+        send_message(user_id, "🔗 Reklam linkini gönder.", reply_markup=keyboard)
 
     def handle_ad_link(self, user_id, text, user):
         self.user_states[user_id]['action'] = 'waiting_ad_text'
         self.user_states[user_id]['link_url'] = text.strip()
         keyboard = {
             'inline_keyboard': [
-                [{'text': '❌ İptal Et' if user['language'] == 'tr' else '❌ Cancel', 'callback_data': 'cancel_action'}]
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
             ]
         }
-        send_message(user_id, "📝 Reklam metnini gönder." if user['language'] == 'tr' else "📝 Send ad text.", reply_markup=keyboard)
+        send_message(user_id, "📝 Reklam metnini gönder.", reply_markup=keyboard)
 
     def handle_ad_text(self, user_id, text, user):
         self.user_states[user_id]['action'] = 'waiting_ad_budget'
         self.user_states[user_id]['ad_text'] = text.strip()
         keyboard = {
             'inline_keyboard': [
-                [{'text': '❌ İptal Et' if user['language'] == 'tr' else '❌ Cancel', 'callback_data': 'cancel_action'}]
+                [{'text': '❌ İptal Et', 'callback_data': 'cancel_action'}]
             ]
         }
-        send_message(user_id, "💰 Reklam bütçesini gir." if user['language'] == 'tr' else "💰 Enter ad budget.", reply_markup=keyboard)
+        send_message(user_id, "💰 Reklam bütçesini gir.", reply_markup=keyboard)
 
     def handle_ad_budget(self, user_id, text, user):
         try:
             budget = float(text)
             if budget <= 0:
-                send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz." if user['language'] == 'tr' else "❌ Please enter a number or Cancel.")
+                send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz.")
                 return
         except ValueError:
-            send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz." if user['language'] == 'tr' else "❌ Please enter a number or Cancel.")
+            send_message(user_id, "❌ Lütfen sayı giriniz veya İptal ediniz.")
             return
 
         if user['balance'] < budget:
-            send_message(user_id, "❌ Bakiye yetersiz. Depozit yap veya reklam bakiyeni çevir." if user['language'] == 'tr' else "❌ Insufficient balance. Make a deposit or convert ad budget.")
+            send_message(user_id, "❌ Bakiye yetersiz. Depozit yap veya reklam bakiyeni çevir.")
             return
 
         poster = self.user_states[user_id]['poster']
@@ -1396,23 +1431,22 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         ad = self.db.get_random_active_ad(user_id)
         if not ad:
             if callback_id:
-                answer_callback_query(callback_id, "📭 Şu anda reklam yok" if self.db.get_user(user_id)['language'] == 'tr' else "📭 No ads available")
-            send_message(user_id, "📭 Şu anda görüntülenecek reklam yok." if self.db.get_user(user_id)['language'] == 'tr' else "📭 No ads available to view.")
+                answer_callback_query(callback_id, "📭 Şu anda reklam yok")
+            send_message(user_id, "📭 Şu anda görüntülenecek reklam yok.")
             return
 
         reward = min(ad['remaining_budget'], ad['budget'] * 0.5)
-        user = self.db.get_user(user_id)
         caption = f"""
-📢 *{'REKLAM' if user['language'] == 'tr' else 'AD'}*
+📢 *REKLAM*
 
 {ad['ad_text']}
 
-💰 {'İzleme Ödülü' if user['language'] == 'tr' else 'View Reward'}: `${reward:.2f}`
+💰 İzleme Ödülü: `${reward:.2f}`
         """
         keyboard = {
             'inline_keyboard': [
-                [{'text': '🔗 Linke Git' if user['language'] == 'tr' else '🔗 Go to Link', 'url': ad['link_url']}],
-                [{'text': '✅ Ödül Al' if user['language'] == 'tr' else '✅ Get Reward', 'callback_data': f"ad_reward_{ad['id']}"}]
+                [{'text': '🔗 Linke Git', 'url': ad['link_url']}],
+                [{'text': '✅ Ödül Al', 'callback_data': f"ad_reward_{ad['id']}"}]
             ]
         }
         send_photo(user_id, ad['poster'], caption=caption, reply_markup=keyboard)
@@ -1423,16 +1457,16 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         self.db.cursor.execute('SELECT * FROM ads WHERE id = ?', (ad_id,))
         ad = self.db.cursor.fetchone()
         if not ad:
-            answer_callback_query(callback_id, "❌ Reklam bulunamadı" if self.db.get_user(user_id)['language'] == 'tr' else "❌ Ad not found", True)
+            answer_callback_query(callback_id, "❌ Reklam bulunamadı", True)
             return
         ad = dict(ad)
         if ad['remaining_budget'] <= 0 or ad['status'] != 'active':
-            answer_callback_query(callback_id, "❌ Reklam bütçesi bitti" if self.db.get_user(user_id)['language'] == 'tr' else "❌ Ad budget exhausted", True)
+            answer_callback_query(callback_id, "❌ Reklam bütçesi bitti", True)
             return
 
         reward = min(ad['remaining_budget'], ad['budget'] * 0.5)
         if not self.db.record_ad_view(ad_id, user_id, reward):
-            answer_callback_query(callback_id, "ℹ️ Bu reklam için ödül alındı" if self.db.get_user(user_id)['language'] == 'tr' else "ℹ️ Already rewarded for this ad", True)
+            answer_callback_query(callback_id, "ℹ️ Bu reklam için ödül alındı", True)
             return
 
         self.db.cursor.execute('UPDATE users SET balance = balance + ? WHERE user_id = ?', (reward, user_id))
@@ -1451,31 +1485,30 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
                 'created_at': datetime.utcnow().isoformat()
             })
 
-        answer_callback_query(callback_id, f"✅ Ödül eklendi: ${reward:.2f}" if self.db.get_user(user_id)['language'] == 'tr' else f"✅ Reward added: ${reward:.2f}", True)
+        answer_callback_query(callback_id, f"✅ Ödül eklendi: ${reward:.2f}", True)
 
     def show_ad_refund_list(self, user_id, callback_id=None):
         ads = self.db.get_user_ads(user_id)
         if not ads:
             if callback_id:
-                answer_callback_query(callback_id, "📭 Aktif reklam yok" if self.db.get_user(user_id)['language'] == 'tr' else "📭 No active ads")
-            send_message(user_id, "📭 Aktif reklam bulunamadı." if self.db.get_user(user_id)['language'] == 'tr' else "📭 No active ads found.")
+                answer_callback_query(callback_id, "📭 Aktif reklam yok")
+            send_message(user_id, "📭 Aktif reklam bulunamadı.")
             return
 
-        user = self.db.get_user(user_id)
         keyboard = {
             'inline_keyboard': [
                 [{'text': f"ID #{ad['id']} - ${ad['remaining_budget']:.2f}", 'callback_data': f"ad_refund_{ad['id']}"}]
                 for ad in ads
-            ] + [[{'text': '🏠 Ana Menü' if user['language'] == 'tr' else '🏠 Main Menu', 'callback_data': 'main_menu'}]]
+            ] + [[{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]]
         }
-        send_message(user_id, "💱 İade edilecek reklamı seç:" if user['language'] == 'tr' else "💱 Select ad to refund:", reply_markup=keyboard)
+        send_message(user_id, "💱 İade edilecek reklamı seç:", reply_markup=keyboard)
         if callback_id:
             answer_callback_query(callback_id)
 
     def handle_ad_refund(self, user_id, ad_id, callback_id):
         refunded = self.db.refund_ad_budget(ad_id, user_id)
         if refunded is None:
-            answer_callback_query(callback_id, "❌ İade edilemedi" if self.db.get_user(user_id)['language'] == 'tr' else "❌ Refund failed", True)
+            answer_callback_query(callback_id, "❌ İade edilemedi", True)
             return
         if self.firebase.enabled:
             self.firebase.upsert('ads', ad_id, {
@@ -1483,26 +1516,25 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
                 'remaining_budget': 0,
                 'refunded_at': datetime.utcnow().isoformat()
             })
-        answer_callback_query(callback_id, f"✅ İade edildi: ${refunded:.2f}" if self.db.get_user(user_id)['language'] == 'tr' else f"✅ Refunded: ${refunded:.2f}", True)
+        answer_callback_query(callback_id, f"✅ İade edildi: ${refunded:.2f}", True)
 
     def show_ad_manage_list(self, user_id, callback_id=None):
         ads = self.db.get_owner_ads(user_id)
         if not ads:
             if callback_id:
-                answer_callback_query(callback_id, "📭 Reklam yok" if self.db.get_user(user_id)['language'] == 'tr' else "📭 No ads")
-            send_message(user_id, "📭 Reklam bulunamadı." if self.db.get_user(user_id)['language'] == 'tr' else "📭 No ads found.")
+                answer_callback_query(callback_id, "📭 Reklam yok")
+            send_message(user_id, "📭 Reklam bulunamadı.")
             return
-        user = self.db.get_user(user_id)
         keyboard = {'inline_keyboard': []}
         for ad in ads[:10]:
             status = ad['status']
-            label = "⏸️ Duraklat" if status == 'active' and user['language'] == 'tr' else "▶️ Devam Et" if user['language'] == 'tr' else "⏸️ Pause" if status == 'active' else "▶️ Resume"
+            label = "⏸️ Duraklat" if status == 'active' else "▶️ Devam Et"
             action = f"ad_pause_{ad['id']}" if status == 'active' else f"ad_resume_{ad['id']}"
             keyboard['inline_keyboard'].append([
                 {'text': f"#{ad['id']} {status} ${ad['remaining_budget']:.4f}", 'callback_data': action}
             ])
-        keyboard['inline_keyboard'].append([{'text': '🏠 Ana Menü' if user['language'] == 'tr' else '🏠 Main Menu', 'callback_data': 'main_menu'}])
-        send_message(user_id, "⚙️ Reklam yönetimi:" if user['language'] == 'tr' else "⚙️ Ad management:", reply_markup=keyboard)
+        keyboard['inline_keyboard'].append([{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}])
+        send_message(user_id, "⚙️ Reklam yönetimi:", reply_markup=keyboard)
         if callback_id:
             answer_callback_query(callback_id)
 
@@ -1514,7 +1546,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
                 'status': 'paused',
                 'paused_at': datetime.utcnow().isoformat()
             })
-        answer_callback_query(callback_id, "⏸️ Duraklatıldı" if self.db.get_user(user_id)['language'] == 'tr' else "⏸️ Paused", True)
+        answer_callback_query(callback_id, "⏸️ Duraklatıldı", True)
 
     def handle_ad_resume(self, user_id, ad_id, callback_id):
         self.db.cursor.execute('UPDATE ads SET status = ? WHERE id = ? AND owner_id = ?', ('active', ad_id, user_id))
@@ -1524,7 +1556,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
                 'status': 'active',
                 'resumed_at': datetime.utcnow().isoformat()
             })
-        answer_callback_query(callback_id, "▶️ Devam etti" if self.db.get_user(user_id)['language'] == 'tr' else "▶️ Resumed", True)
+        answer_callback_query(callback_id, "▶️ Devam etti", True)
     
     def handle_callback_query(self, callback_query):
         data = callback_query['data']
@@ -1540,10 +1572,13 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             # Normal kullanıcı callback'leri
             if data.startswith('lang_'):
                 lang = data.split('_')[1]
-                self.db.cursor.execute('UPDATE users SET language = ? WHERE user_id = ?', (lang, user_id))
-                self.db.connection.commit()
-                answer_callback_query(callback_id, "✅ Dil seçildi" if lang == 'tr' else "✅ Language selected")
-                self.show_main_menu(user_id, lang)
+                if lang in ['tr', 'en']:  # SADECE 2 DİL
+                    self.db.cursor.execute('UPDATE users SET language = ? WHERE user_id = ?', (lang, user_id))
+                    self.db.connection.commit()
+                    answer_callback_query(callback_id, "✅ Dil seçildi / Language selected")
+                    self.show_main_menu(user_id, lang)
+                else:
+                    answer_callback_query(callback_id, "❌ Desteklenmeyen dil / Unsupported language")
             
             elif data == 'main_menu':
                 user = self.db.get_user(user_id)
@@ -1582,8 +1617,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             
             elif data == 'refresh_tasks':
                 self.show_tasks(user_id)
-                user = self.db.get_user(user_id)
-                answer_callback_query(callback_id, "🔄 Görevler yenilendi" if user['language'] == 'tr' else "🔄 Tasks refreshed")
+                answer_callback_query(callback_id, "🔄 Görevler yenilendi / Tasks refreshed")
             
             elif data == 'start_withdrawal':
                 self.start_withdrawal_process(user_id, callback_id)
@@ -1595,7 +1629,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             elif data == 'copy_ref':
                 user = self.db.get_user(user_id)
                 if user:
-                    answer_callback_query(callback_id, f"📋 Referans Kodunuz: {user['referral_code']}\nBu kodu kopyalayıp paylaşabilirsiniz." if user['language'] == 'tr' else f"📋 Your Referral Code: {user['referral_code']}\nCopy and share this code.", True)
+                    answer_callback_query(callback_id, f"📋 Referans Kodunuz: {user['referral_code']}\nBu kodu kopyalayıp paylaşabilirsiniz.", True)
             
             elif data == 'show_ads':
                 self.show_ads_menu(user_id)
@@ -1630,9 +1664,7 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
             
         except Exception as e:
             print(f"Callback error: {e}")
-            user = self.db.get_user(user_id)
-            if user:
-                answer_callback_query(callback_id, "❌ Bir hata oluştu" if user['language'] == 'tr' else "❌ An error occurred")
+            answer_callback_query(callback_id, "❌ Bir hata oluştu / An error occurred")
 
     def show_admin_panel(self, admin_id):
         """Admin panelini göster"""
@@ -1700,8 +1732,8 @@ Create your ad, view ads, and convert remaining ad budget back to balance.
         if not self.enforce_mandatory_channels(user_id, lang):
             return
         
-        if lang == 'tr':
-            welcome_text = f"""
+        welcome_texts = {
+            'tr': f"""
 🌟 *HOŞ GELDİN {user['first_name']}!* 🌟
 
 🚀 **{BOT_NAME}** - Telegram'ın en kazançlı görev botu! 
@@ -1723,9 +1755,8 @@ Kolay görevler tamamlayarak para kazanmaya hemen başla!
 - Her gün yeni görevler ekleniyor
 - Referanslarınla ekstra kazan
 - Düzenli bonuslar ve promosyonlar
-            """
-        else:
-            welcome_text = f"""
+            """,
+            'en': f"""
 🌟 *WELCOME {user['first_name']}!* 🌟
 
 🚀 **{BOT_NAME}** - The most profitable task bot on Telegram!
@@ -1748,37 +1779,34 @@ Start earning money right away by completing simple tasks!
 - Earn extra with referrals
 - Regular bonuses and promotions
             """
+        }
         
-        if lang == 'tr':
-            keyboard = {
-                'keyboard': [
-                    ["🎯 Görevler", "💰 Bakiye"],
-                    ["💳 Yükle", "📢 Reklam"],
-                    ["👥 Davet", "👤 Profil"],
-                    ["❓ Yardım", "⚙️ Ayarlar"]
-                ],
-                'resize_keyboard': True,
-                'one_time_keyboard': False
-            }
-        else:
-            keyboard = {
-                'keyboard': [
-                    ["🎯 Tasks", "💰 Balance"],
-                    ["💳 Deposit", "📢 Ads"],
-                    ["👥 Referral", "👤 Profile"],
-                    ["❓ Help", "⚙️ Settings"]
-                ],
-                'resize_keyboard': True,
-                'one_time_keyboard': False
-            }
+        text = welcome_texts.get(lang, welcome_texts['tr'])
+        
+        keyboard = {
+            'keyboard': [
+                ["🎯 Görevler", "💰 Bakiye"],
+                ["💳 Yükle", "📢 Reklam"],
+                ["👥 Davet", "👤 Profil"],
+                ["❓ Yardım", "⚙️ Ayarlar"]
+            ],
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        } if lang == 'tr' else {
+            'keyboard': [
+                ["🎯 Tasks", "💰 Balance"],
+                ["💳 Deposit", "📢 Ads"],
+                ["👥 Referral", "👤 Profile"],
+                ["❓ Help", "⚙️ Settings"]
+            ],
+            'resize_keyboard': True,
+            'one_time_keyboard': False
+        }
 
         if str(user_id) in ADMIN_IDS:
-            if lang == 'tr':
-                keyboard['keyboard'].append(["🛡️ Admin Panel"])
-            else:
-                keyboard['keyboard'].append(["🛡️ Admin Panel"])
+            keyboard['keyboard'].append(["🛡️ Admin Panel"])
         
-        send_message(user_id, welcome_text, reply_markup=keyboard)
+        send_message(user_id, text, reply_markup=keyboard)
     
     # GÖREVLER SAYFASI
     def show_tasks(self, user_id):
@@ -1794,32 +1822,33 @@ Start earning money right away by completing simple tasks!
         lang = user['language']
         
         if not tasks:
-            if lang == 'tr':
-                text = """
+            no_tasks_texts = {
+                'tr': """
 📭 *GÖREV YOK*
 
 Şu anda görev bulunmuyor.
 Yeni görev eklemek için **/createtask** kullan.
-                """
-            else:
-                text = """
+                """,
+                'en': """
 📭 *NO TASKS*
 
 There are no tasks right now.
 Create a task with **/createtask**.
                 """
+            }
             
+            text = no_tasks_texts.get(lang, no_tasks_texts['tr'])
             keyboard = {
                 'inline_keyboard': [
-                    [{'text': '🔄 Yenile' if lang == 'tr' else '🔄 Refresh', 'callback_data': 'refresh_tasks'}],
-                    [{'text': '🏠 Ana Menü' if lang == 'tr' else '🏠 Main Menu', 'callback_data': 'main_menu'}]
+                    [{'text': '🔄 Yenile', 'callback_data': 'refresh_tasks'}],
+                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
                 ]
             }
             send_message(user_id, text, reply_markup=keyboard)
             return
         
-        if lang == 'tr':
-            text = f"""
+        text = {
+            'tr': f"""
 🎯 *MEVCUT GÖREVLER* ({len(tasks)})
 
 Aşağıdaki görevleri tamamlayarak ödül kazanabilirsiniz. Her görevin kendi talimatları ve ödül miktarı bulunmaktadır.
@@ -1829,9 +1858,8 @@ Aşağıdaki görevleri tamamlayarak ödül kazanabilirsiniz. Her görevin kendi
 2. Görevin açıklamasını dikkatlice okuyun
 3. Talimatları eksiksiz uygulayın
 4. Tamamlandığında ödül otomatik eklenir
-            """
-        else:
-            text = f"""
+            """,
+            'en': f"""
 🎯 *AVAILABLE TASKS* ({len(tasks)})
 
 You can earn rewards by completing the tasks below. Each task has its own instructions and reward amount.
@@ -1842,14 +1870,15 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 3. Follow the instructions completely
 4. Reward is added automatically
             """
+        }.get(lang)
         
         keyboard = {'inline_keyboard': []}
         
         type_map = {
-            'channel_join': 'Kanal' if lang == 'tr' else 'Channel',
-            'group_join': 'Grup' if lang == 'tr' else 'Group',
-            'bot_start': 'Bot' if lang == 'tr' else 'Bot',
-            'post': 'Post' if lang == 'tr' else 'Post'
+            'channel_join': 'Kanal',
+            'group_join': 'Grup',
+            'bot_start': 'Bot',
+            'post': 'Post'
         }
         for task in tasks[:10]:  # İlk 10 görevi göster
             task_type_label = type_map.get(task['task_type'], task['task_type'])
@@ -1858,11 +1887,9 @@ You can earn rewards by completing the tasks below. Each task has its own instru
                 {'text': btn_text, 'callback_data': f'join_task_{task["id"]}'}
             ])
         
-        refresh_text = '🔄 Yenile' if lang == 'tr' else '🔄 Refresh'
-        menu_text = '🏠 Ana Menü' if lang == 'tr' else '🏠 Main Menu'
         keyboard['inline_keyboard'].extend([
-            [{'text': refresh_text, 'callback_data': 'refresh_tasks'}],
-            [{'text': menu_text, 'callback_data': 'main_menu'}]
+            [{'text': '🔄 Yenile / Refresh', 'callback_data': 'refresh_tasks'}],
+            [{'text': '🏠 Ana Menü / Main Menu', 'callback_data': 'main_menu'}]
         ])
         
         send_message(user_id, text, reply_markup=keyboard)
@@ -1877,8 +1904,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
         lang = user['language']
         ad_summary = self.db.get_ad_budget_summary(user_id)
         
-        if lang == 'tr':
-            text = f"""
+        balance_texts = {
+            'tr': f"""
 💰 *BAKİYE DURUMU*
 
 ━━━━━━━━━━━━━━━━
@@ -1905,9 +1932,8 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 4. Özel promosyonlara katılarak
 
 ⚡ *Hızlı İşlemler:*
-            """
-        else:
-            text = f"""
+            """,
+            'en': f"""
 💰 *BALANCE STATUS*
 
 ━━━━━━━━━━━━━━━━
@@ -1935,27 +1961,19 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 
 ⚡ *Quick Actions:*
             """
+        }
         
-        if lang == 'tr':
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '🏧 Para Çek', 'callback_data': 'show_withdraw'}],
-                    [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
-                    [{'text': '📢 Reklam', 'callback_data': 'show_ads'}],
-                    [{'text': '🎯 Görevlere Git', 'callback_data': 'show_tasks'}],
-                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
-                ]
-            }
-        else:
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '🏧 Withdraw', 'callback_data': 'show_withdraw'}],
-                    [{'text': '💳 Deposit', 'callback_data': 'show_deposit'}],
-                    [{'text': '📢 Ads', 'callback_data': 'show_ads'}],
-                    [{'text': '🎯 Go to Tasks', 'callback_data': 'show_tasks'}],
-                    [{'text': '🏠 Main Menu', 'callback_data': 'main_menu'}]
-                ]
-            }
+        text = balance_texts.get(lang, balance_texts['tr'])
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🏧 Para Çek', 'callback_data': 'show_withdraw'}],
+                [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
+                [{'text': '📢 Reklam', 'callback_data': 'show_ads'}],
+                [{'text': '🎯 Görevlere Git', 'callback_data': 'show_tasks'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
         
         send_message(user_id, text, reply_markup=keyboard)
 
@@ -1968,17 +1986,16 @@ You can earn rewards by completing the tasks below. Each task has its own instru
 
         lang = user['language']
 
-        if lang == 'tr':
-            text = """
+        deposit_texts = {
+            'tr': """
 💳 *BAKİYE YÜKLEME*
 
 ℹ️ Manuel yükleme için bize yaz:
 👉 @AlperenTHE
 
 Minimum tutar yok.
-"""
-        else:
-            text = """
+""",
+            'en': """
 💳 *DEPOSIT*
 
 ℹ️ Manual deposit, contact:
@@ -1986,12 +2003,15 @@ Minimum tutar yok.
 
 No minimum amount.
 """
+        }
+
+        text = deposit_texts.get(lang, deposit_texts['tr'])
 
         keyboard = {
             'inline_keyboard': [
-                [{'text': '📞 Destek' if lang == 'tr' else '📞 Support', 'url': 'https://t.me/AlperenTHE'}],
-                [{'text': '💰 Bakiye' if lang == 'tr' else '💰 Balance', 'callback_data': 'show_balance'}],
-                [{'text': '🏠 Ana Menü' if lang == 'tr' else '🏠 Main Menu', 'callback_data': 'main_menu'}]
+                [{'text': '📞 Destek', 'url': 'https://t.me/AlperenTHE'}],
+                [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
         }
 
@@ -2006,17 +2026,16 @@ No minimum amount.
         
         lang = user['language']
         
-        if lang == 'tr':
-            text = """
+        withdraw_texts = {
+            'tr': """
 🚫 *PARA ÇEKME ŞU AN KAPALI*
 
 ━━━━━━━━━━━━━━━━
 Şu anda çekim talepleri devre dışıdır.
 Yeni duyuru geldiğinde tekrar açılacaktır.
 ━━━━━━━━━━━━━━━━
-"""
-        else:
-            text = """
+""",
+            'en': """
 🚫 *WITHDRAWALS ARE DISABLED*
 
 ━━━━━━━━━━━━━━━━
@@ -2024,21 +2043,16 @@ Withdrawals are currently disabled.
 They will be re-enabled with a new announcement.
 ━━━━━━━━━━━━━━━━
 """
+        }
 
-        if lang == 'tr':
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
-                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
-                ]
-            }
-        else:
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '💳 Deposit', 'callback_data': 'show_deposit'}],
-                    [{'text': '🏠 Main Menu', 'callback_data': 'main_menu'}]
-                ]
-            }
+        text = withdraw_texts.get(lang, withdraw_texts['tr'])
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
         
         send_message(user_id, text, reply_markup=keyboard)
     
@@ -2065,8 +2079,8 @@ They will be re-enabled with a new announcement.
         
         referral_link = f"https://t.me/{BOT_USERNAME}?start={user['referral_code']}"
         
-        if lang == 'tr':
-            text = f"""
+        referral_texts = {
+            'tr': f"""
 👥 *REFERANS SİSTEMİ*
 
 ━━━━━━━━━━━━━━━━
@@ -2105,9 +2119,8 @@ They will be re-enabled with a new announcement.
 4. Kanalınız varsa açıklamaya ekleyin
 
 ⚡ *Hızlı Paylaşım Butonları:*
-            """
-        else:
-            text = f"""
+            """,
+            'en': f"""
 👥 *REFERRAL SYSTEM*
 
 ━━━━━━━━━━━━━━━━
@@ -2147,25 +2160,18 @@ They will be re-enabled with a new announcement.
 
 ⚡ *Quick Share Buttons:*
             """
+        }
         
-        if lang == 'tr':
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '📋 Referans Kodunu Kopyala', 'callback_data': 'copy_ref'}],
-                    [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
-                    [{'text': '🎯 Görevler', 'callback_data': 'show_tasks'}],
-                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
-                ]
-            }
-        else:
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '📋 Copy Referral Code', 'callback_data': 'copy_ref'}],
-                    [{'text': '💰 Balance', 'callback_data': 'show_balance'}],
-                    [{'text': '🎯 Tasks', 'callback_data': 'show_tasks'}],
-                    [{'text': '🏠 Main Menu', 'callback_data': 'main_menu'}]
-                ]
-            }
+        text = referral_texts.get(lang, referral_texts['tr'])
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📋 Referans Kodunu Kopyala', 'callback_data': 'copy_ref'}],
+                [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '🎯 Görevler', 'callback_data': 'show_tasks'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
         
         send_message(user_id, text, reply_markup=keyboard)
     
@@ -2187,8 +2193,8 @@ They will be re-enabled with a new announcement.
         last_active = datetime.strptime(user['last_active'], '%Y-%m-%d %H:%M:%S') if isinstance(user['last_active'], str) else user['last_active']
         days_active = (datetime.now() - last_active).days
         
-        if lang == 'tr':
-            text = f"""
+        profile_texts = {
+            'tr': f"""
 👤 *PROFİL BİLGİLERİ*
 
 ━━━━━━━━━━━━━━━━
@@ -2219,9 +2225,8 @@ They will be re-enabled with a new announcement.
 2. Referanslarınızı artırın
 3. Günlük bonusları takip edin
 4. Özel etkinliklere katılın
-            """
-        else:
-            text = f"""
+            """,
+            'en': f"""
 👤 *PROFILE INFORMATION*
 
 ━━━━━━━━━━━━━━━━
@@ -2253,25 +2258,19 @@ They will be re-enabled with a new announcement.
 3. Follow daily bonuses
 4. Participate in special events
             """
+        }
         
-        if lang == 'tr':
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
-                    [{'text': '👥 Referanslar', 'callback_data': 'show_referral'}],
-                    [{'text': '🎯 Görevler', 'callback_data': 'show_tasks'}],
-                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
-                ]
-            }
-        else:
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '💰 Balance', 'callback_data': 'show_balance'}],
-                    [{'text': '👥 Referrals', 'callback_data': 'show_referral'}],
-                    [{'text': '🎯 Tasks', 'callback_data': 'show_tasks'}],
-                    [{'text': '🏠 Main Menu', 'callback_data': 'main_menu'}]
-                ]
-            }
+        text = profile_texts.get(lang, profile_texts['tr'])
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '👥 Referanslar', 'callback_data': 'show_referral'}],
+                [{'text': '🎯 Görevler', 'callback_data': 'show_tasks'}],
+                [{'text': '⚙️ Dil Değiştir', 'callback_data': 'change_language'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
         
         send_message(user_id, text, reply_markup=keyboard)
     
@@ -2280,23 +2279,28 @@ They will be re-enabled with a new announcement.
         achievements = []
         
         if user['tasks_completed'] >= 10:
-            achievements.append("✅ 10+ Görev Tamamlandı" if lang == 'tr' else "✅ 10+ Tasks Completed")
+            achievements.append("✅ 10+ Görev Tamamlandı")
         elif user['tasks_completed'] >= 5:
-            achievements.append("🟡 5 Görev Tamamlandı" if lang == 'tr' else "🟡 5 Tasks Completed")
+            achievements.append("🟡 5 Görev Tamamlandı")
         else:
-            achievements.append("🔴 Görev Başlatılmadı" if lang == 'tr' else "🔴 No Tasks Started")
+            achievements.append("🔴 Görev Başlatılmadı")
         
         if user['total_referrals'] >= MIN_REFERRALS_FOR_WITHDRAW:
-            achievements.append(f"✅ {MIN_REFERRALS_FOR_WITHDRAW}+ Referans" if lang == 'tr' else f"✅ {MIN_REFERRALS_FOR_WITHDRAW}+ Referrals")
+            achievements.append(f"✅ {MIN_REFERRALS_FOR_WITHDRAW}+ Referans")
         else:
-            achievements.append(f"🔴 {user['total_referrals']}/{MIN_REFERRALS_FOR_WITHDRAW} Referans" if lang == 'tr' else f"🔴 {user['total_referrals']}/{MIN_REFERRALS_FOR_WITHDRAW} Referrals")
+            achievements.append(f"🔴 {user['total_referrals']}/{MIN_REFERRALS_FOR_WITHDRAW} Referans")
         
         if user['balance'] >= MIN_WITHDRAW:
-            achievements.append(f"✅ ${MIN_WITHDRAW}+ Bakiye" if lang == 'tr' else f"✅ ${MIN_WITHDRAW}+ Balance")
+            achievements.append(f"✅ ${MIN_WITHDRAW}+ Bakiye")
         else:
-            achievements.append(f"🔴 ${user['balance']:.2f}/{MIN_WITHDRAW} Bakiye" if lang == 'tr' else f"🔴 ${user['balance']:.2f}/{MIN_WITHDRAW} Balance")
+            achievements.append(f"🔴 ${user['balance']:.2f}/{MIN_WITHDRAW} Bakiye")
         
-        return "\n".join([f"• {ach}" for ach in achievements])
+        if lang == 'tr':
+            return "\n".join([f"• {ach}" for ach in achievements])
+        elif lang == 'en':
+            return "\n".join([f"• {ach}" for ach in achievements])
+        else:
+            return "\n".join([f"• {ach}" for ach in achievements])
     
     # YARDIM SAYFASI
     def show_help(self, user_id):
@@ -2307,8 +2311,8 @@ They will be re-enabled with a new announcement.
         
         lang = user['language']
         
-        if lang == 'tr':
-            text = f"""
+        help_texts = {
+            'tr': f"""
 ❓ *YARDIM VE DESTEK*
 
 ━━━━━━━━━━━━━━━━
@@ -2360,9 +2364,8 @@ They will be re-enabled with a new announcement.
 
 🚀 *Firebase Veritabanı Rehberi:*
 • Detaylı kurulum ve entegrasyon için **/firebase** komutunu kullanın
-            """
-        else:
-            text = f"""
+            """,
+            'en': f"""
 ❓ *HELP AND SUPPORT*
 
 ━━━━━━━━━━━━━━━━
@@ -2415,25 +2418,18 @@ They will be re-enabled with a new announcement.
 🚀 *Firebase Database Guide:*
 • Use **/firebase** to view the step-by-step setup
             """
+        }
         
-        if lang == 'tr':
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '📞 Destekle İletişim', 'url': f'tg://resolve?domain={SUPPORT_USERNAME[1:]}'}],
-                    [{'text': '📢 Resmi Kanal', 'url': 'https://t.me/TaskizLive'}],
-                    [{'text': '🔥 Firebase Rehberi', 'callback_data': 'firebase_guide'}],
-                    [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
-                ]
-            }
-        else:
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '📞 Contact Support', 'url': f'tg://resolve?domain={SUPPORT_USERNAME[1:]}'}],
-                    [{'text': '📢 Official Channel', 'url': 'https://t.me/TaskizLive'}],
-                    [{'text': '🔥 Firebase Guide', 'callback_data': 'firebase_guide'}],
-                    [{'text': '🏠 Main Menu', 'callback_data': 'main_menu'}]
-                ]
-            }
+        text = help_texts.get(lang, help_texts['tr'])
+        
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📞 Destekle İletişim', 'url': f'tg://resolve?domain={SUPPORT_USERNAME[1:]}'}],
+                [{'text': '📢 Resmi Kanal', 'url': 'https://t.me/TaskizLive'}],
+                [{'text': '🔥 Firebase Rehberi', 'callback_data': 'firebase_guide'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
         
         send_message(user_id, text, reply_markup=keyboard)
 
@@ -2445,8 +2441,8 @@ They will be re-enabled with a new announcement.
 
         lang = user['language']
 
-        if lang == 'tr':
-            text = f"""
+        firebase_texts = {
+            'tr': f"""
 🔥 **FIREBASE KISA REHBER** 🔥
 
 ✅ **Seçim:** **Firestore** (önerilen) veya **Realtime DB**  
