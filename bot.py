@@ -132,6 +132,22 @@ def get_chat_member(chat_id, user_id):
     except:
         return False
 
+def get_updates(offset=None, timeout=30):
+    url = BASE_URL + "getUpdates"
+    params = {
+        'timeout': timeout,
+    }
+    if offset is not None:
+        params['offset'] = offset
+    try:
+        response = requests.get(url, params=params, timeout=timeout + 5)
+        data = response.json()
+        if data.get('ok'):
+            return data.get('result', [])
+    except Exception as e:
+        print(f"❌ Update alma hatası: {e}")
+    return []
+
 # Firebase helper
 class FirebaseClient:
     def __init__(self):
@@ -2631,3 +2647,18 @@ db = firestore.client()
 
         text = firebase_texts.get(lang, firebase_texts['tr'])
         send_message(user_id, text, parse_mode="Markdown")
+
+def run_polling():
+    bot = TaskizBot()
+    offset = None
+    while True:
+        updates = get_updates(offset=offset, timeout=30)
+        for update in updates:
+            update_id = update.get('update_id')
+            if update_id is not None:
+                offset = update_id + 1
+            bot.handle_update(update)
+        time.sleep(1)
+
+if __name__ == "__main__":
+    run_polling()
