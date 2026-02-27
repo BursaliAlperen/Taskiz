@@ -48,8 +48,8 @@ SUPPORTED_LANGUAGES = {
 }
 
 # Sistem Ayarları
-MIN_WITHDRAW = 0.30
-MIN_REFERRALS_FOR_WITHDRAW = 10
+MIN_WITHDRAW = 0.10
+MIN_REFERRALS_FOR_WITHDRAW = 0
 REF_WELCOME_BONUS = 0.005
 REF_TASK_COMMISSION = 0.25
 
@@ -369,6 +369,7 @@ class Database:
                 ('Grup Görevi', 'Belirtilen gruba katılın', 0.0015, 10, 'group_join', 1),
                 ('Post Görevi', 'Belirtilen postu beğen/yorum yap', 0.0005, 10, 'post', 1),
                 ('Bot Görevi', 'Belirtilen botu başlat', 0.001, 10, 'bot_start', 1),
+                ('Surf Görevi', 'Surf bölümüne girip sınırsız kampanyaları keşfedin', 0.0008, 20, 'surf', 1),
             ]
             for task in sample_tasks:
                 self.cursor.execute('''
@@ -798,6 +799,24 @@ class Database:
         ''', (owner_id,))
         row = self.cursor.fetchone()
         return dict(row) if row else {'active_ads': 0, 'remaining_budget': 0}
+
+    def get_withdrawal_summary(self, user_id):
+        self.cursor.execute('''
+            SELECT
+                COUNT(*) as total_requests,
+                COALESCE(SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END), 0) as pending_amount,
+                COALESCE(SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END), 0) as completed_amount,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_count
+            FROM withdrawals
+            WHERE user_id = ?
+        ''', (user_id,))
+        row = self.cursor.fetchone()
+        return dict(row) if row else {
+            'total_requests': 0,
+            'pending_amount': 0,
+            'completed_amount': 0,
+            'pending_count': 0
+        }
     
     # GENEL FONKSİYONLARI
     def update_last_active(self, user_id):
@@ -1304,6 +1323,9 @@ Please join these channels to continue:
         # Reklam oluşturma süreçleri
         if user_id in self.user_states:
             action = self.user_states[user_id].get('action')
+            if action == 'waiting_trx_address':
+                self.handle_trx_address(user_id, text, user)
+                return
             if action == 'waiting_ad_poster':
                 self.handle_ad_poster(user_id, text, user)
                 return
@@ -1324,12 +1346,19 @@ Please join these channels to continue:
         """TRX adresi alındığında"""
         if user_id in self.user_states:
             amount = self.user_states[user_id].get('withdraw_amount', 0)
+            if amount < MIN_WITHDRAW:
+                send_message(user_id, f"❌ Minimum çekim `${MIN_WITHDRAW:.2f}`")
+                del self.user_states[user_id]
+                return
+            if len(text.strip()) < 20:
+                send_message(user_id, "❌ Geçersiz TRX adresi. Lütfen tekrar deneyin.")
+                return
             
             # Çekim kaydı
             self.db.cursor.execute('''
                 INSERT INTO withdrawals (user_id, amount, trx_address, status)
                 VALUES (?, ?, ?, 'pending')
-            ''', (user_id, amount, text, 'pending'))
+            ''', (user_id, amount, text.strip()))
             
             # Bakiye düş
             self.db.cursor.execute('UPDATE users SET balance = balance - ? WHERE user_id = ?', (amount, user_id))
@@ -1380,6 +1409,10 @@ Please join these channels to continue:
                 self.show_firebase_guide(user_id)
             elif cmd == '/ads':
                 self.show_ads_menu(user_id)
+            elif cmd == '/settings':
+                self.show_settings(user_id)
+            elif cmd == '/info':
+                self.show_info_center(user_id)
             else:
                 self.show_main_menu(user_id, lang)
         else:
@@ -1390,22 +1423,268 @@ Please join these channels to continue:
                 self.show_balance(user_id)
             elif text in ["🏧 Çek", "Withdraw"]:
                 self.show_withdraw(user_id)
+            elif text in ["🏧 Çekim", "🏧 Withdraw"]:
+                self.show_withdraw(user_id)
             elif text in ["💳 Yükle", "Deposit"]:
                 self.show_deposit(user_id)
             elif text in ["📢 Reklam", "📢 Ads"]:
                 self.show_ads_menu(user_id)
             elif text in ["👥 Davet", "Referral"]:
                 self.show_referral(user_id)
+            elif text in ["🌐 Surf"]:
+                self.show_surf_info(user_id)
             elif text in ["👤 Profil", "Profile"]:
                 self.show_profile(user_id)
             elif text in ["❓ Yardım", "Help"]:
                 self.show_help(user_id)
+            elif text in ["⚙️ Ayarlar", "⚙️ Settings"]:
+                self.show_settings(user_id)
+            elif text in ["ℹ️ Bilgi", "ℹ️ Info"]:
+                self.show_info_center(user_id)
             elif text in ["🔥 Firebase Rehberi", "Firebase Guide"]:
                 self.show_firebase_guide(user_id)
             elif text in ["🛡️ Admin Panel"] and str(user_id) in ADMIN_IDS:
                 self.show_admin_panel(user_id)
             else:
                 self.show_main_menu(user_id, lang)
+
+    def handle_admin_add_balance(self, admin_id, text):
+        """/addbalance USER_ID|@username AMOUNT [REASON]"""
+        parts = text.split(maxsplit=3)
+        if len(parts) < 3:
+            send_message(admin_id, "❌ Kullanım: /addbalance USER_ID|@username AMOUNT [REASON]")
+            return
+
+        target = parts[1].strip()
+        try:
+            amount = float(parts[2])
+        except ValueError:
+            send_message(admin_id, "❌ Geçersiz miktar")
+            return
+        if amount <= 0:
+            send_message(admin_id, "❌ Miktar 0'dan büyük olmalı")
+            return
+
+        reason = parts[3].strip() if len(parts) > 3 else "Admin bakiye yüklemesi"
+        user_id = None
+        if target.startswith('@'):
+            self.db.cursor.execute('SELECT user_id FROM users WHERE username = ?', (target[1:],))
+            row = self.db.cursor.fetchone()
+            if row:
+                user_id = row[0]
+        else:
+            try:
+                user_id = int(target)
+            except ValueError:
+                pass
+
+        if not user_id or not self.db.get_user(user_id):
+            send_message(admin_id, "❌ Kullanıcı bulunamadı")
+            return
+
+        self.db.admin_add_balance(user_id, amount, admin_id, reason)
+        send_message(admin_id, f"✅ Bakiye eklendi: `{user_id}` → `${amount:.2f}`")
+
+    def handle_admin_create_task(self, admin_id, text):
+        """/createtask TITLE REWARD MAX_PARTICIPANTS TYPE DESCRIPTION"""
+        parts = text.split(maxsplit=5)
+        if len(parts) < 6:
+            send_message(admin_id, "❌ Kullanım: /createtask TITLE REWARD MAX_PARTICIPANTS TYPE DESCRIPTION")
+            return
+
+        title = parts[1].strip()
+        try:
+            reward = float(parts[2])
+            max_participants = int(parts[3])
+        except ValueError:
+            send_message(admin_id, "❌ Ödül veya katılımcı sayısı hatalı")
+            return
+
+        task_type = parts[4].strip().lower()
+        description = parts[5].strip()
+        valid_types = {'channel_join', 'group_join', 'bot_start', 'post', 'surf'}
+        if task_type not in valid_types:
+            send_message(admin_id, "❌ TYPE: channel_join, group_join, bot_start, post, surf")
+            return
+
+        task_id = self.db.admin_create_task(title, description, reward, max_participants, task_type, admin_id)
+        if not task_id:
+            send_message(admin_id, "❌ Görev oluşturulamadı")
+            return
+
+        if self.firebase.enabled:
+            self.firebase.upsert('tasks', task_id, {
+                'title': title,
+                'description': description,
+                'reward': reward,
+                'max_participants': max_participants,
+                'current_participants': 0,
+                'status': 'active',
+                'task_type': task_type,
+                'created_by': admin_id,
+                'created_at': datetime.utcnow().isoformat()
+            })
+
+        send_message(admin_id, f"✅ Görev oluşturuldu: `#{task_id}` ({task_type})")
+
+    def handle_admin_deposit_note(self, admin_id, text):
+        send_message(admin_id, "ℹ️ /depositnote özelliği şu an pasif.")
+
+    def join_task(self, user_id, task_id, callback_id=None):
+        reward = self.db.complete_task(user_id, task_id)
+        if reward is None:
+            if callback_id:
+                answer_callback_query(callback_id, "❌ Görev alınamadı veya zaten tamamlandı", True)
+            return
+
+        if callback_id:
+            answer_callback_query(callback_id, f"✅ Görev tamamlandı +${reward:.4f}", True)
+        send_message(user_id, f"✅ Görev tamamlandı!\n💰 Ödül: `${reward:.4f}`")
+
+    def start_withdrawal_process(self, user_id, callback_id=None):
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+
+        self.db.cursor.execute('SELECT COUNT(*) FROM withdrawals WHERE user_id = ? AND status = "pending"', (user_id,))
+        if self.db.cursor.fetchone()[0] > 0:
+            if callback_id:
+                answer_callback_query(callback_id, "⏳ Zaten bekleyen çekim talebiniz var", True)
+            send_message(user_id, "⏳ Önce mevcut bekleyen çekim talebiniz sonuçlansın.")
+            return
+
+        lang = user['language']
+        if user['balance'] < MIN_WITHDRAW:
+            msg = (
+                f"❌ Minimum çekim tutarı `${MIN_WITHDRAW:.2f}`.\nMevcut bakiye: `${user['balance']:.2f}`"
+                if lang == 'tr' else
+                f"❌ Minimum withdrawal is `${MIN_WITHDRAW:.2f}`.\nCurrent balance: `${user['balance']:.2f}`"
+            )
+            if callback_id:
+                answer_callback_query(callback_id, "❌ Yetersiz bakiye" if lang == 'tr' else "❌ Insufficient balance", True)
+            send_message(user_id, msg)
+            return
+
+        self.user_states[user_id] = {
+            'action': 'waiting_trx_address',
+            'withdraw_amount': user['balance']
+        }
+
+        if callback_id:
+            answer_callback_query(callback_id, "✅ TRX adresini gönder" if lang == 'tr' else "✅ Send TRX address")
+
+        prompt = (
+            f"🏧 Çekim başlatıldı.\nÇekilecek tutar: `${user['balance']:.2f}`\nLütfen TRX adresinizi gönderin."
+            if lang == 'tr' else
+            f"🏧 Withdrawal started.\nAmount: `${user['balance']:.2f}`\nPlease send your TRX address."
+        )
+        keyboard = {'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel_action'}]]}
+        send_message(user_id, prompt, reply_markup=keyboard)
+
+    def show_surf_info(self, user_id, callback_id=None):
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+        lang = user['language']
+        text = (
+            "🌐 *SURF KAZANÇ MODU*\n\n"
+            "Surf bölümünde *sınırsız (unlimited)* kampanya bilgisi görebilir,\n"
+            "surf görevleri ile ekstra para kazanabilirsiniz.\n\n"
+            "💡 İpucu: Düzenli kontrol ederek en yeni surf görevlerini kaçırmayın."
+            if lang == 'tr' else
+            "🌐 *SURF EARNING MODE*\n\n"
+            "In Surf section you can access *unlimited* campaign info\n"
+            "and earn extra money with surf tasks.\n\n"
+            "💡 Tip: Check frequently to catch newest surf tasks."
+        )
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🎯 Görevlere Dön', 'callback_data': 'show_tasks'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+        if callback_id:
+            answer_callback_query(callback_id, "🌐 Surf bilgisi" if lang == 'tr' else "🌐 Surf info")
+        send_message(user_id, text, reply_markup=keyboard)
+
+    def show_settings(self, user_id):
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+
+        lang = user['language']
+        text = (
+            "⚙️ *AYARLAR*\n\n"
+            "• Dili değiştirebilirsiniz\n"
+            "• Destek ve yardım ekranına gidebilirsiniz"
+            if lang == 'tr' else
+            "⚙️ *SETTINGS*\n\n"
+            "• Change bot language\n"
+            "• Open support and help screen"
+        )
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '🌍 Dil Seç / Language', 'callback_data': 'change_language'}],
+                [{'text': '❓ Yardım', 'callback_data': 'show_help'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+        send_message(user_id, text, reply_markup=keyboard)
+
+    def show_info_center(self, user_id):
+        user = self.db.get_user(user_id)
+        if not user:
+            return
+
+        lang = user['language']
+        ad_summary = self.db.get_ad_budget_summary(user_id)
+        wd = self.db.get_withdrawal_summary(user_id)
+
+        text = (
+            f"ℹ️ *BİLGİ MERKEZİ*\n\n"
+            f"👤 Kullanıcı: `{user['first_name']}`\n"
+            f"💵 Bakiye: `${user['balance']:.2f}`\n"
+            f"🎯 Tamamlanan görev: `{user['tasks_completed']}`\n"
+            f"👥 Referans: `{user['total_referrals']}`\n"
+            f"📢 Aktif reklam: `{ad_summary['active_ads']}`\n"
+            f"💰 Reklam bütçesi: `${ad_summary['remaining_budget']:.2f}`\n\n"
+            f"🏧 Çekim Özeti\n"
+            f"• Toplam talep: `{wd['total_requests']}`\n"
+            f"• Bekleyen talep: `{wd['pending_count']}`\n"
+            f"• Bekleyen tutar: `${wd['pending_amount']:.2f}`\n"
+            f"• Ödenen toplam: `${wd['completed_amount']:.2f}`\n\n"
+            f"📌 Kurallar\n"
+            f"• Minimum çekim: `${MIN_WITHDRAW:.2f}`\n"
+            f"• Referans şartı: Yok\n"
+            f"• Onay süresi: 24-48 saat"
+            if lang == 'tr' else
+            f"ℹ️ *INFO CENTER*\n\n"
+            f"👤 User: `{user['first_name']}`\n"
+            f"💵 Balance: `${user['balance']:.2f}`\n"
+            f"🎯 Completed tasks: `{user['tasks_completed']}`\n"
+            f"👥 Referrals: `{user['total_referrals']}`\n"
+            f"📢 Active ads: `{ad_summary['active_ads']}`\n"
+            f"💰 Ad budget: `${ad_summary['remaining_budget']:.2f}`\n\n"
+            f"🏧 Withdrawal Summary\n"
+            f"• Total requests: `{wd['total_requests']}`\n"
+            f"• Pending requests: `{wd['pending_count']}`\n"
+            f"• Pending amount: `${wd['pending_amount']:.2f}`\n"
+            f"• Total paid: `${wd['completed_amount']:.2f}`\n\n"
+            f"📌 Rules\n"
+            f"• Minimum withdrawal: `${MIN_WITHDRAW:.2f}`\n"
+            f"• Referral requirement: None\n"
+            f"• Review time: 24-48h"
+        )
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '🏧 Çekim', 'callback_data': 'show_withdraw'}],
+                [{'text': '👥 Referans', 'callback_data': 'show_referral'}],
+                [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
+            ]
+        }
+        send_message(user_id, text, reply_markup=keyboard)
     
     def show_language_selection(self, user_id):
         """Dil seçimi göster"""
@@ -1712,6 +1991,18 @@ If there's a current post task, tap view and get your reward!
                     self.show_main_menu(user_id, user['language'])
             elif data == 'firebase_guide':
                 self.show_firebase_guide(user_id)
+
+            elif data == 'show_help':
+                self.show_help(user_id)
+
+            elif data == 'change_language':
+                self.show_language_selection(user_id)
+
+            elif data == 'show_info':
+                self.show_info_center(user_id)
+
+            elif data == 'show_settings':
+                self.show_settings(user_id)
             
             elif data == 'show_tasks':
                 self.show_tasks(user_id)
@@ -1738,6 +2029,9 @@ If there's a current post task, tap view and get your reward!
             elif data == 'refresh_tasks':
                 self.show_tasks(user_id)
                 answer_callback_query(callback_id, "🔄 Görevler yenilendi / Tasks refreshed")
+
+            elif data == 'show_surf_info':
+                self.show_surf_info(user_id, callback_id)
             
             elif data == 'start_withdrawal':
                 self.start_withdrawal_process(user_id, callback_id)
@@ -1907,8 +2201,10 @@ Start earning money right away by completing simple tasks!
             'keyboard': [
                 ["🎯 Görevler", "💰 Bakiye"],
                 ["💳 Yükle", "📢 Reklam"],
-                ["👥 Davet", "👤 Profil"],
-                ["❓ Yardım", "⚙️ Ayarlar"]
+                ["👥 Davet", "🌐 Surf"],
+                ["👤 Profil", "🏧 Çekim"],
+                ["❓ Yardım", "⚙️ Ayarlar"],
+                ["ℹ️ Bilgi"]
             ],
             'resize_keyboard': True,
             'one_time_keyboard': False
@@ -1916,8 +2212,10 @@ Start earning money right away by completing simple tasks!
             'keyboard': [
                 ["🎯 Tasks", "💰 Balance"],
                 ["💳 Deposit", "📢 Ads"],
-                ["👥 Referral", "👤 Profile"],
-                ["❓ Help", "⚙️ Settings"]
+                ["👥 Referral", "🌐 Surf"],
+                ["👤 Profile", "🏧 Withdraw"],
+                ["❓ Help", "⚙️ Settings"],
+                ["ℹ️ Info"]
             ],
             'resize_keyboard': True,
             'one_time_keyboard': False
@@ -1997,13 +2295,23 @@ You can earn rewards by completing the tasks below.
         keyboard = {'inline_keyboard': []}
         
         type_map = {
-            'channel_join': 'Kanal',
-            'group_join': 'Grup',
-            'bot_start': 'Bot',
-            'post': 'Post'
+            'tr': {
+                'channel_join': 'Kanal',
+                'group_join': 'Grup',
+                'bot_start': 'Bot',
+                'post': 'Post',
+                'surf': 'Surf'
+            },
+            'en': {
+                'channel_join': 'Channel',
+                'group_join': 'Group',
+                'bot_start': 'Bot',
+                'post': 'Post',
+                'surf': 'Surf'
+            }
         }
         for task in tasks[:10]:  # İlk 10 görevi göster
-            task_type_label = type_map.get(task['task_type'], task['task_type'])
+            task_type_label = type_map.get(lang, type_map['tr']).get(task['task_type'], task['task_type'])
             original_reward = task['reward']
             actual_reward = original_reward * 0.67
             btn_text = f"{task_type_label} | {task['title']} - ${actual_reward:.4f} ({task['current_participants']}/{task['max_participants']})"
@@ -2012,6 +2320,7 @@ You can earn rewards by completing the tasks below.
             ])
         
         keyboard['inline_keyboard'].extend([
+            [{'text': '🌐 Surf Bilgisi / Surf Info', 'callback_data': 'show_surf_info'}],
             [{'text': '🔄 Yenile / Refresh', 'callback_data': 'refresh_tasks'}],
             [{'text': '🏠 Ana Menü / Main Menu', 'callback_data': 'main_menu'}]
         ])
@@ -2045,7 +2354,7 @@ You can earn rewards by completing the tasks below.
 
 🏧 *Çekim Koşulları:*
 - Minimum çekim: `${MIN_WITHDRAW}`
-- Minimum referans: `{MIN_REFERRALS_FOR_WITHDRAW}` aktif referans
+- Minimum referans: `Yok`
 - Çekim süresi: 24-48 saat
 - Komisyon: %0 (Komisyonsuz!)
 
@@ -2073,7 +2382,7 @@ You can earn rewards by completing the tasks below.
 
 🏧 *Withdrawal Conditions:*
 - Minimum withdrawal: `${MIN_WITHDRAW}`
-- Minimum referrals: `{MIN_REFERRALS_FOR_WITHDRAW}` active referrals
+- Minimum referrals: `None`
 - Withdrawal time: 24-48 hours
 - Commission: 0% (No commission!)
 
@@ -2095,6 +2404,7 @@ You can earn rewards by completing the tasks below.
                 [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
                 [{'text': '📢 Reklam', 'callback_data': 'show_ads'}],
                 [{'text': '🎯 Görevlere Git', 'callback_data': 'show_tasks'}],
+                [{'text': 'ℹ️ Bilgi Merkezi', 'callback_data': 'show_info'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
         }
@@ -2153,21 +2463,27 @@ You can deposit any amount you want.
         lang = user['language']
         
         withdraw_texts = {
-            'tr': """
-🚫 *PARA ÇEKME ŞU AN KAPALI*
+            'tr': f"""
+🏧 *PARA ÇEKME*
 
 ━━━━━━━━━━━━━━━━
-Şu anda çekim talepleri devre dışıdır.
-Yeni duyuru geldiğinde tekrar açılacaktır.
+💵 Mevcut Bakiye: `${user['balance']:.2f}`
+💸 Minimum Çekim: `${MIN_WITHDRAW:.2f}`
+👥 Referans Şartı: Yok
 ━━━━━━━━━━━━━━━━
+
+Aşağıdan çekim işlemini başlatabilirsiniz.
 """,
-            'en': """
-🚫 *WITHDRAWALS ARE DISABLED*
+            'en': f"""
+🏧 *WITHDRAWAL*
 
 ━━━━━━━━━━━━━━━━
-Withdrawals are currently disabled.
-They will be re-enabled with a new announcement.
+💵 Current Balance: `${user['balance']:.2f}`
+💸 Minimum Withdrawal: `${MIN_WITHDRAW:.2f}`
+👥 Referral Requirement: None
 ━━━━━━━━━━━━━━━━
+
+Use the button below to start withdrawal.
 """
         }
 
@@ -2175,6 +2491,7 @@ They will be re-enabled with a new announcement.
 
         keyboard = {
             'inline_keyboard': [
+                [{'text': '✅ Çekimi Başlat', 'callback_data': 'start_withdrawal'}],
                 [{'text': '💳 Bakiye Yükle', 'callback_data': 'show_deposit'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
@@ -2225,12 +2542,12 @@ They will be re-enabled with a new announcement.
    • Otomatik ödeme
 
 3. **Minimum Çekim:**
-   • Çekim için en az `{MIN_REFERRALS_FOR_WITHDRAW}` aktif referans gereklidir
+   • Referans şartı yoktur, minimum tutar yeterlidir
 
 📊 *Referans İstatistikleriniz:*
 ├ 👥 Toplam Referans: `{user['total_referrals']}`
 ├ 💰 Referans Kazancı: `${ref_earned:.2f}`
-└ 🎯 Hedef: `{MIN_REFERRALS_FOR_WITHDRAW}` referans
+└ 🎯 Hedef: Daha fazla aktif kullanıcı davet et
 
 🔗 *Referans Linkiniz:*
 `{referral_link}`
@@ -2265,12 +2582,12 @@ They will be re-enabled with a new announcement.
    • Automatic payment
 
 3. **Minimum Withdrawal:**
-   • At least `{MIN_REFERRALS_FOR_WITHDRAW}` active referrals required for withdrawal
+   • No referral requirement, minimum amount is enough
 
 📊 *Your Referral Statistics:*
 ├ 👥 Total Referrals: `{user['total_referrals']}`
 ├ 💰 Referral Earnings: `${ref_earned:.2f}`
-└ 🎯 Target: `{MIN_REFERRALS_FOR_WITHDRAW}` referrals
+└ 🎯 Target: Invite more active users
 
 🔗 *Your Referral Link:*
 `{referral_link}`
@@ -2293,7 +2610,9 @@ They will be re-enabled with a new announcement.
         keyboard = {
             'inline_keyboard': [
                 [{'text': '📋 Referans Kodunu Kopyala', 'callback_data': 'copy_ref'}],
+                [{'text': '📤 Linki Paylaş', 'url': f'https://t.me/share/url?url={referral_link}'}],
                 [{'text': '💰 Bakiye', 'callback_data': 'show_balance'}],
+                [{'text': '🏧 Para Çek', 'callback_data': 'show_withdraw'}],
                 [{'text': '🎯 Görevler', 'callback_data': 'show_tasks'}],
                 [{'text': '🏠 Ana Menü', 'callback_data': 'main_menu'}]
             ]
@@ -2340,8 +2659,8 @@ They will be re-enabled with a new announcement.
 
 🎯 *Hedefleriniz:*
 ├ 💰 Minimum Çekim: `${MIN_WITHDRAW}`
-├ 👥 Minimum Referans: `{MIN_REFERRALS_FOR_WITHDRAW}`
-└ 🏆 Kalan Referans: `{max(0, MIN_REFERRALS_FOR_WITHDRAW - user['total_referrals'])}`
+├ 👥 Minimum Referans: `Yok`
+└ 🏆 Kalan Referans: `0`
 
 ⭐ *Başarı Durumu:*
 {self.get_achievement_status(user, lang)}
@@ -2372,8 +2691,8 @@ They will be re-enabled with a new announcement.
 
 🎯 *Your Targets:*
 ├ 💰 Minimum Withdrawal: `${MIN_WITHDRAW}`
-├ 👥 Minimum Referrals: `{MIN_REFERRALS_FOR_WITHDRAW}`
-└ 🏆 Remaining Referrals: `{max(0, MIN_REFERRALS_FOR_WITHDRAW - user['total_referrals'])}`
+├ 👥 Minimum Referrals: `None`
+└ 🏆 Remaining Referrals: `0`
 
 ⭐ *Achievement Status:*
 {self.get_achievement_status(user, lang)}
@@ -2411,7 +2730,9 @@ They will be re-enabled with a new announcement.
         else:
             achievements.append("🔴 Görev Başlatılmadı")
         
-        if user['total_referrals'] >= MIN_REFERRALS_FOR_WITHDRAW:
+        if MIN_REFERRALS_FOR_WITHDRAW <= 0:
+            achievements.append("✅ Referans şartı yok")
+        elif user['total_referrals'] >= MIN_REFERRALS_FOR_WITHDRAW:
             achievements.append(f"✅ {MIN_REFERRALS_FOR_WITHDRAW}+ Referans")
         else:
             achievements.append(f"🔴 {user['total_referrals']}/{MIN_REFERRALS_FOR_WITHDRAW} Referans")
@@ -2512,8 +2833,8 @@ They will be re-enabled with a new announcement.
    • Balance updates instantly
 
 2. **What are the withdrawal conditions?**
-   • Withdrawals are currently disabled
-   • Conditions will be announced when reopened
+   • Minimum withdrawal: `${MIN_WITHDRAW}`
+   • Submit TRX address and request is reviewed in 24-48h
 
 3. **How do I earn from referral system?**
    • Each new referral: `${REF_WELCOME_BONUS}` bonus
