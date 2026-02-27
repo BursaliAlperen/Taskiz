@@ -76,7 +76,13 @@ def send_message(chat_id, text, reply_markup=None, parse_mode='Markdown'):
     
     try:
         response = requests.post(url, json=payload, timeout=10)
-        return response.json()
+        data = response.json()
+        # Markdown parse hatalarında, mesajı biçimlendirmesiz tekrar dene
+        if not data.get('ok') and 'parse entities' in (data.get('description', '').lower()):
+            payload.pop('parse_mode', None)
+            response = requests.post(url, json=payload, timeout=10)
+            return response.json()
+        return data
     except Exception as e:
         print(f"❌ Mesaj gönderme hatası: {e}")
         return None
