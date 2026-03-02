@@ -56,19 +56,17 @@ SUPPORTED_LANGUAGES = {
 MIN_WITHDRAW        = 0.05   # TON
 REF_WELCOME_BONUS   = 0.005  # TON
 REF_TASK_COMMISSION = 0.25   # 25%
+TASK_BUDGET_MULTIPLIER = 1.5  # Kullanıcının ödediği bütçe, dağıtılan toplam ödülün 1.5 katıdır.
 
 # Görev oluşturma bütçe seçenekleri
 TASK_BUDGET_OPTIONS = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
 
-# Görev türüne göre katılımcı başı ödül
+# Görev türüne göre katılımcı başı ödül (kullanıcıya verilecek miktar)
 TASK_REWARDS = {
     'channel_join': 0.0025,   # Kanal katılım
     'group_join':   0.0025,   # Grup katılım
     'bot_start':    0.001,    # Bot başlatma
 }
-
-# Varsayılan katılımcı başı ödül
-TASK_REWARD_PER_USER = 0.0025
 
 # ════════════════════════════════════════════
 #              FLASK
@@ -97,7 +95,6 @@ def send_message(chat_id, text, reply_markup=None, parse_mode='Markdown'):
     return _post("sendMessage", p)
 
 def copy_message(chat_id, from_chat_id, message_id, reply_markup=None, caption=None):
-    """Mesajı orijinal formatta kopyala (forward gibi ama "Forwarded from" yazısı olmadan)"""
     p = {'chat_id': chat_id, 'from_chat_id': from_chat_id, 'message_id': message_id}
     if reply_markup:
         p['reply_markup'] = json.dumps(reply_markup)
@@ -116,7 +113,7 @@ def answer_callback(cb_id, text=None, alert=False):
 def get_chat_member(chat_id, user_id):
     """
     Üyelik kontrolü.
-    Herhangi bir hata/timeout → True döner (engelleme yok).
+    Hata durumunda False döner (bot yetkisiz veya kanal yok).
     """
     try:
         r = requests.post(BASE_URL + "getChatMember",
@@ -126,14 +123,12 @@ def get_chat_member(chat_id, user_id):
         if not data.get("ok"):
             err = data.get("description", "").lower()
             print(f"getChatMember [{chat_id}] → {err}")
-            # Bot kanalda değil veya yetki yok → engelleme yapma
-            return True
+            return False
         status = data["result"]["status"]
-        # left veya kicked → üye değil
         return status not in ("left", "kicked")
     except Exception as e:
         print(f"getChatMember exc [{chat_id}]: {e}")
-        return True  # Hata durumunda her zaman geçir
+        return False
 
 def get_updates(offset=None, timeout=30):
     params = {'timeout': timeout}
@@ -153,9 +148,9 @@ def get_updates(offset=None, timeout=30):
 # ════════════════════════════════════════════
 class FirebaseClient:
     """
-    Firebase = Birincil kalici depolama.
-    SQLite  = Hizli okuma icin yerel onbellek.
-    Her deploy sonrasi SQLite sifirlanir ama Firebase kalicidir.
+    Firebase = Birincil kalıcı depolama.
+    SQLite  = Hızlı okuma için yerel önbellek.
+    Her deploy sonrası SQLite sıfırlanır ama Firebase kalıcıdır.
     """
     def __init__(self):
         self.enabled = False
@@ -163,27 +158,26 @@ class FirebaseClient:
         self._queue  = []
         self._qlock  = threading.Lock()
 
-        # FIREBASE_DATABASE_URL is module-level env var
         cred_json = FIREBASE_CREDENTIALS_JSON or ''
         project   = FIREBASE_PROJECT_ID or ''
 
         if not cred_json or not project:
-            print('WARNING Firebase env vars eksik -- sadece SQLite kullanilacak')
+            print('WARNING Firebase env vars eksik -- sadece SQLite kullanılacak')
             return
         try:
             cred = credentials.Certificate(json.loads(cred_json))
             if not firebase_admin._apps:
                 opts = {'projectId': project}
-                if FIREBASE_DATABASE_URL:  # noqa
+                if FIREBASE_DATABASE_URL:
                     opts['databaseURL'] = FIREBASE_DATABASE_URL
                 firebase_admin.initialize_app(cred, opts)
             self.fs = firestore.client()
             self.enabled = True
-            print('Firebase baglandi (Firestore)')
+            print('Firebase bağlandı (Firestore)')
             t = threading.Thread(target=self._flush_loop, daemon=True)
             t.start()
         except Exception as e:
-            print(f'Firebase baglanti hatasi: {e}')
+            print(f'Firebase bağlantı hatası: {e}')
 
     def _flush_loop(self):
         while True:
@@ -227,9 +221,9 @@ class FirebaseClient:
 
     def restore_to_sqlite(self, db_obj):
         if not self.enabled:
-            print('Firebase devre disi -- veriler sifirdan basliyor')
+            print('Firebase devre dışı -- veriler sıfırdan başlıyor')
             return
-        print('Firebase den veriler yukleniyor...')
+        print('Firebase den veriler yükleniyor...')
         conn = db_obj.conn
 
         users = self.load_collection('users')
@@ -254,7 +248,7 @@ class FirebaseClient:
                 )
             except Exception as e:
                 print(f'User restore [{doc_id}]: {e}')
-        print(f'  {len(users)} kullanici yuklendi')
+        print(f'  {len(users)} kullanıcı yüklendi')
 
         tasks = self.load_collection('tasks')
         for doc_id, t in tasks:
@@ -280,7 +274,7 @@ class FirebaseClient:
                 )
             except Exception as e:
                 print(f'Task restore [{doc_id}]: {e}')
-        print(f'  {len(tasks)} gorev yuklendi')
+        print(f'  {len(tasks)} görev yüklendi')
 
         comps = self.load_collection('task_completions')
         for doc_id, c in comps:
@@ -291,7 +285,7 @@ class FirebaseClient:
                 )
             except:
                 pass
-        print(f'  {len(comps)} tamamlama yuklendi')
+        print(f'  {len(comps)} tamamlama yüklendi')
 
         wds = self.load_collection('withdrawals')
         for doc_id, w in wds:
@@ -312,7 +306,7 @@ class FirebaseClient:
                 )
             except Exception as e:
                 print(f'WD restore [{doc_id}]: {e}')
-        print(f'  {len(wds)} cekim yuklendi')
+        print(f'  {len(wds)} çekim yüklendi')
 
         refs = self.load_collection('referrals')
         for doc_id, r in refs:
@@ -324,7 +318,7 @@ class FirebaseClient:
                 )
             except:
                 pass
-        print(f'  {len(refs)} referans yuklendi')
+        print(f'  {len(refs)} referans yüklendi')
 
         pens = self.load_collection('channel_leave_penalties')
         for doc_id, p in pens:
@@ -336,10 +330,10 @@ class FirebaseClient:
                 )
             except:
                 pass
-        print(f'  {len(pens)} ceza kaydi yuklendi')
+        print(f'  {len(pens)} ceza kaydı yüklendi')
 
         conn.commit()
-        print('Firebase restore tamamlandi!')
+        print('Firebase restore tamamlandı!')
 
 
 # ════════════════════════════════════════════
@@ -351,9 +345,8 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.cur = self.conn.cursor()
         self._lock = threading.Lock()
-        self.fb = firebase  # FirebaseClient referansı
+        self.fb = firebase
         self._setup()
-        # Deploy sonrası Firebase'den verileri geri yükle
         if self.fb:
             self.fb.restore_to_sqlite(self)
         print("✅ Veritabanı hazır")
@@ -393,15 +386,11 @@ class DB:
                 current_participants INTEGER DEFAULT 0,
                 status              TEXT DEFAULT 'active',
                 task_type           TEXT DEFAULT 'channel_join',
-                -- channel_join | group_join | bot_start
                 target_username     TEXT DEFAULT '',
                 target_link         TEXT DEFAULT '',
-                -- bot_start için: forward edilen mesajın bilgileri
                 fwd_chat_id         TEXT DEFAULT '',
                 fwd_message_id      INTEGER DEFAULT 0,
-                -- görevi kim oluşturdu
                 created_by          INTEGER DEFAULT 0,
-                -- görev için harcanan bütçe
                 budget              REAL DEFAULT 0,
                 created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -583,7 +572,6 @@ class DB:
         reward = task['reward']
         self.q('INSERT INTO task_completions(task_id,user_id) VALUES(?,?)', (tid, uid))
         self.q('UPDATE tasks SET current_participants=current_participants+1 WHERE id=?', (tid,))
-        # Görev dolunca kapat
         self.cur.execute('SELECT current_participants,max_participants FROM tasks WHERE id=?', (tid,))
         row = self.cur.fetchone()
         if row and row[0] >= row[1]:
@@ -592,7 +580,6 @@ class DB:
                (reward, reward, uid))
         self.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
                (uid, reward, 'task_reward', task['title']))
-        # Referans komisyonu
         user = self.get_user(uid)
         if user and user['referred_by']:
             commission = reward * REF_TASK_COMMISSION
@@ -602,7 +589,6 @@ class DB:
             if self.fb:
                 ref_u = self.get_user(user['referred_by'])
                 if ref_u: self.fb.save('users', str(user['referred_by']), dict(ref_u))
-        # Firebase sync — kullanici + gorev + tamamlama
         if self.fb:
             fresh = self.get_user(uid)
             if fresh: self.fb.save('users', str(uid), dict(fresh))
@@ -703,10 +689,6 @@ class DB:
         return dict(row) if row else None
 
     def check_and_penalize_left_channels(self, uid):
-        """
-        Kullanici kanal/grup gorevini tamamlamis ama kanaldan ayrilmissa
-        kazandigi odulu geri al.
-        """
         sql = (
             "SELECT tc.task_id, t.reward, t.target_username, t.task_type "
             "FROM task_completions tc "
@@ -735,7 +717,7 @@ class DB:
                         self.q('UPDATE users SET balance=balance-? WHERE user_id=?', (deduct, uid))
                         self.q(
                             'INSERT INTO channel_leave_penalties(user_id,task_id,amount,reason) VALUES(?,?,?,?)',
-                            (uid, task['task_id'], deduct, 'Kanaldan ayrildi: ' + task['target_username'])
+                            (uid, task['task_id'], deduct, 'Kanaldan ayrıldı: ' + task['target_username'])
                         )
                         self.q(
                             'INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
@@ -787,6 +769,7 @@ _T = {
         'ton_saved':    "✅ TON adresin kaydedildi!",
         'check_btn':    "✅ Katıldım, Kontrol Et",
         'channel_check':"⏳ Üyelik kontrol ediliyor...",
+        'admin_needed': "❌ Bot bu kanalda/grupta admin değil. Lütfen önce botu admin yapın.",
     },
     'en': {
         'lang_pick':    "🌍 *SELECT LANGUAGE* — Choose a language:",
@@ -813,6 +796,7 @@ _T = {
         'ton_saved':    "✅ TON address saved!",
         'check_btn':    "✅ I Joined, Check",
         'channel_check':"⏳ Checking membership...",
+        'admin_needed': "❌ Bot is not admin in this channel/group. Please add bot as admin first.",
     },
     'pt_br': {
         'lang_pick':    "🌍 *SELECIONAR IDIOMA* — Escolha um idioma:",
@@ -839,6 +823,7 @@ _T = {
         'ton_saved':    "✅ Endereço TON salvo!",
         'check_btn':    "✅ Entrei, Verificar",
         'channel_check':"⏳ Verificando participação...",
+        'admin_needed': "❌ O bot não é admin neste canal/grupo. Por favor, adicione o bot como admin primeiro.",
     },
 }
 
@@ -870,43 +855,13 @@ class Bot:
         print(f"🤖 {BOT_NAME} hazır!")
 
     # ──────────────────────────────────────────
-    #   KANAL KONTROLÜ
+    #   KANAL KONTROLÜ (GEÇİCİ OLARAK PASİF)
     # ──────────────────────────────────────────
     def missing_channels(self, uid):
-        missing = []
-        for ch in MANDATORY_CHANNELS + MANDATORY_GROUPS:
-            try:
-                if not get_chat_member(f"@{ch['username']}", uid):
-                    missing.append(ch)
-            except Exception as e:
-                print(f"missing_channels check error [{ch['username']}]: {e}")
-                # Hata durumunda bu kanalı zorunlu sayma
-        return missing
+        return []  # Zorunlu kanal kontrolü şimdilik yok
 
     def enforce_channels(self, uid, lang):
-        try:
-            missing = self.missing_channels(uid)
-        except Exception as e:
-            print(f"enforce_channels error: {e}")
-            return True  # Hata varsa geç, menüyü göster
-        if not missing:
-            return True
-        all_req = MANDATORY_CHANNELS + MANDATORY_GROUPS
-        joined  = [c for c in all_req if c not in missing]
-        lines   = [f"✅ {c['emoji']} {c['name']}" for c in joined] + \
-                  [f"❌ {c['emoji']} {c['name']}" for c in missing]
-        texts   = {
-            'tr':    "⚠️ *ZORUNLU ÜYELİK*\n\n" + '\n'.join(lines) + "\n\n👇 Kanallara katıl, sonra *Kontrol Et* butonuna bas.",
-            'en':    "⚠️ *MANDATORY MEMBERSHIP*\n\n" + '\n'.join(lines) + "\n\n👇 Join the channels then press *Check*.",
-            'pt_br': "⚠️ *PARTICIPAÇÃO OBRIGATÓRIA*\n\n" + '\n'.join(lines) + "\n\n👇 Entre nos canais e pressione *Verificar*.",
-        }
-        buttons = [[{'text': f"👉 {c['emoji']} {c['name']}", 'url': c['link']}] for c in missing]
-        buttons.append([{'text': T(lang, 'check_btn'), 'callback_data': 'check_channels'}])
-        try:
-            send_message(uid, texts.get(lang, texts['en']), reply_markup={'inline_keyboard': buttons})
-        except Exception as e:
-            print(f"enforce_channels send error: {e}")
-        return False
+        return True  # Her zaman geç
 
     # ──────────────────────────────────────────
     #   KLAVYE
@@ -945,17 +900,15 @@ class Bot:
                 return
             if not lang:
                 lang = user['language']
-            if not self.enforce_channels(uid, lang):
-                return
             stars = '⭐' * min(5, max(1, int(user['total_referrals'] / 5) + 1))
             msgs  = {
                 'tr': f"""╔══════════════════════╗
-║   🚀  *{BOT_NAME}*   ║
+║   🚀  GÖREV MERKEZİ  ║
 ╚══════════════════════╝
 👋 Hoş geldin, *{user['first_name']}*! {stars}
 ┌──────────────────────
 │ 💎 Bakiye:    `{user['balance']:.4f} TON`
-│ 🎯 Görevler:  `{user['tasks_completed']}`
+│ 🎯 Tamamlanan: `{user['tasks_completed']}`
 │ 👥 Referans:  `{user['total_referrals']}`
 │ 📈 Kazanç:    `{user['total_earned']:.4f} TON`
 └──────────────────────
@@ -963,12 +916,12 @@ class Bot:
 🔗 Davet et → +{REF_WELCOME_BONUS} TON/kişi!
 🛠️ Kendi görevini yayınla!""",
                 'en': f"""╔══════════════════════╗
-║   🚀  *{BOT_NAME}*   ║
+║   🚀  TASK CENTER    ║
 ╚══════════════════════╝
 👋 Welcome, *{user['first_name']}*! {stars}
 ┌──────────────────────
 │ 💎 Balance:   `{user['balance']:.4f} TON`
-│ 🎯 Tasks:     `{user['tasks_completed']}`
+│ 🎯 Completed: `{user['tasks_completed']}`
 │ 👥 Referrals: `{user['total_referrals']}`
 │ 📈 Earned:    `{user['total_earned']:.4f} TON`
 └──────────────────────
@@ -976,12 +929,12 @@ class Bot:
 🔗 Invite → +{REF_WELCOME_BONUS} TON/person!
 🛠️ Publish your own tasks!""",
                 'pt_br': f"""╔══════════════════════╗
-║   🚀  *{BOT_NAME}*   ║
+║   🚀  CENTRAL DE TAREFAS  ║
 ╚══════════════════════╝
 👋 Bem-vindo, *{user['first_name']}*! {stars}
 ┌──────────────────────
 │ 💎 Saldo:     `{user['balance']:.4f} TON`
-│ 🎯 Tarefas:   `{user['tasks_completed']}`
+│ 🎯 Concluídas:`{user['tasks_completed']}`
 │ 👥 Indicações:`{user['total_referrals']}`
 │ 📈 Ganhos:    `{user['total_earned']:.4f} TON`
 └──────────────────────
@@ -1008,7 +961,6 @@ class Bot:
         lang  = user['language']
         if not self.enforce_channels(uid, lang):
             return
-        # Tamamladığı kanal görevlerini kontrol et (kanaldan çıktıysa ceza)
         self.db.check_and_penalize_left_channels(uid)
         tasks = self.db.get_tasks_for_user(uid)
         if not tasks:
@@ -1113,16 +1065,14 @@ class Bot:
                              'callback_data': f'verify_{tid}'}])
 
         elif tt == 'bot_start':
-            # Bot görevinde: önce forward mesajını göster, sonra buton
             if task['fwd_chat_id'] and task['fwd_message_id']:
                 go_labels    = {'tr': '🤖 Bota Git', 'en': '🤖 Go to Bot', 'pt_br': '🤖 Ir para o Bot'}
-                done_labels  = {'tr': '✅ Botu Başlattım, Ödülü Al', 'en': '✅ I Started the Bot, Get Reward', 'pt_br': '✅ Iniciei o Bot, Pegar Recompensa'}
+                forward_labels = {'tr': '📨 Bot Mesajını Forward Et', 'en': '📨 Forward Bot Message', 'pt_br': '📨 Encaminhar Mensagem do Bot'}
                 if task['target_link']:
                     buttons.append([{'text': go_labels.get(lang, go_labels['en']), 'url': task['target_link']}])
-                buttons.append([{'text': done_labels.get(lang, done_labels['en']),
-                                 'callback_data': f'done_bot_{tid}'}])
+                buttons.append([{'text': forward_labels.get(lang, forward_labels['en']),
+                                 'callback_data': f'forward_bot_{tid}'}])
             else:
-                # Forward mesajı yoksa düz buton
                 go_labels = {'tr': '🤖 Bota Git', 'en': '🤖 Go to Bot', 'pt_br': '🤖 Ir para o Bot'}
                 if task['target_link']:
                     buttons.append([{'text': go_labels.get(lang, go_labels['en']), 'url': task['target_link']}])
@@ -1134,7 +1084,6 @@ class Bot:
             {'text': '🏠 Menü', 'callback_data': 'main_menu'},
         ])
 
-        # Bot görevi için forward mesajını önce gönder
         if tt == 'bot_start' and task['fwd_chat_id'] and task['fwd_message_id']:
             try:
                 copy_message(uid, task['fwd_chat_id'], task['fwd_message_id'])
@@ -1144,7 +1093,6 @@ class Bot:
         send_message(uid, text, reply_markup={'inline_keyboard': buttons})
 
     def verify_membership(self, uid, tid, cb_id):
-        """Kanal/grup üyeliğini kontrol et ve görevi tamamla"""
         user = self.db.get_user(uid)
         if not user:
             return
@@ -1163,11 +1111,12 @@ class Bot:
         target = task['target_username']
         if target:
             target_id = f"@{target.lstrip('@')}"
-            if not get_chat_member(target_id, uid):
+            is_member = get_chat_member(target_id, uid)
+            if not is_member:
                 fail = {
-                    'tr':    f"❌ *Henüz katılmadınız!*\n\n👉 Önce @{target} kanalına/grubuna katılın.",
-                    'en':    f"❌ *You haven't joined yet!*\n\n👉 Join @{target} first.",
-                    'pt_br': f"❌ *Você ainda não entrou!*\n\n👉 Entre em @{target} primeiro.",
+                    'tr': "❌ *Üyelik doğrulanamadı!*\n\nBot kanalda admin olmayabilir veya henüz katılmadınız. Lütfen katılıp tekrar deneyin.",
+                    'en': "❌ *Membership verification failed!*\n\nBot might not be admin or you haven't joined. Please join and try again.",
+                    'pt_br': "❌ *Falha na verificação!*\n\nO bot pode não ser admin ou você não entrou. Por favor, entre e tente novamente."
                 }
                 keyboard = {'inline_keyboard': [
                     [{'text': '👉 Git / Go', 'url': task['target_link']}],
@@ -1187,7 +1136,6 @@ class Bot:
             answer_callback(cb_id, T(lang, 'task_already'), True)
 
     def done_bot_task(self, uid, tid, cb_id):
-        """Bot görevi tamamla (sadece tıklama yeterli)"""
         user = self.db.get_user(uid)
         if not user:
             return
@@ -1204,11 +1152,51 @@ class Bot:
                              [{'text': '💰 Bakiye',           'callback_data': 'show_balance'}],
                          ]})
 
+    def handle_bot_forward(self, uid, msg, task_id):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        lang = user['language']
+        task = self.db.get_task(task_id)
+        if not task or task['task_type'] != 'bot_start':
+            send_message(uid, "❌ Geçersiz görev.")
+            return
+
+        fwd_chat = None
+        if 'forward_from_chat' in msg:
+            fwd_chat = msg['forward_from_chat']
+        elif 'forward_origin' in msg:
+            fwd_chat = msg['forward_origin'].get('chat')
+        if not fwd_chat:
+            send_message(uid, "❌ Forward bilgisi alınamadı. Lütfen bir mesajı doğrudan forward edin.")
+            return
+
+        fwd_chat_id = str(fwd_chat.get('id'))
+        if fwd_chat_id != str(task.get('fwd_chat_id', '')):
+            send_message(uid, "❌ Bu mesaj doğru bottan gelmiyor. Lütfen görevdeki botun bir mesajını forward edin.")
+            return
+
+        if self.db.has_done(uid, task_id):
+            send_message(uid, "❌ Bu görevi zaten tamamladınız.")
+            return
+
+        reward = self.db.complete_task(uid, task_id)
+        if reward:
+            send_message(uid, T(lang, 'task_done', reward=f'{reward:.4f}'),
+                         reply_markup={'inline_keyboard': [
+                             [{'text': '🎯 Daha Fazla Görev', 'callback_data': 'show_tasks'}],
+                             [{'text': '💰 Bakiye',           'callback_data': 'show_balance'}],
+                         ]})
+        else:
+            send_message(uid, "❌ Bir hata oluştu.")
+
+        if uid in self.states:
+            del self.states[uid]
+
     # ──────────────────────────────────────────
     #   GÖREV YAYINLA (HERKES)
     # ──────────────────────────────────────────
     def show_task_publish(self, uid):
-        """Herkesin görev oluşturma ekranı"""
         user = self.db.get_user(uid)
         if not user:
             return
@@ -1226,8 +1214,10 @@ Kullanıcılar görevi tamamladıkça sen de büyürsün!
 👥 Grup — Kullanıcı gruba katılır
 🤖 Bot — Kullanıcı botunu başlatır (forward mesajı gerekir)
 
-*Bütçe Seçenekleri:*
-Bütçe = Katılımcı başı {TASK_REWARD_PER_USER} TON ödül
+*Bütçe Çarpanı:*
+Yatırdığın bütçenin 1/{TASK_BUDGET_MULTIPLIER} kadarı kullanıcılara ödül olarak dağıtılır.
+Örn: 1 TON yatırırsan toplam {1/TASK_BUDGET_MULTIPLIER:.2f} TON ödül dağıtılır.
+
 ━━━━━━━━━━━━━━━━
 Görev türünü seç:""",
             'en': f"""🛠️ *PUBLISH TASK*
@@ -1242,8 +1232,10 @@ Users complete it and your audience grows!
 👥 Group — User joins your group
 🤖 Bot — User starts your bot (forward message required)
 
-*Budget Options:*
-Budget = {TASK_REWARD_PER_USER} TON reward per participant
+*Budget Multiplier:*
+Only 1/{TASK_BUDGET_MULTIPLIER} of your budget is distributed as rewards.
+Example: If you pay 1 TON, total reward distributed is {1/TASK_BUDGET_MULTIPLIER:.2f} TON.
+
 ━━━━━━━━━━━━━━━━
 Select task type:""",
             'pt_br': f"""🛠️ *PUBLICAR TAREFA*
@@ -1258,8 +1250,10 @@ Usuários completam e sua audiência cresce!
 👥 Grupo — Usuário entra no seu grupo
 🤖 Bot — Usuário inicia seu bot (mensagem forward necessária)
 
-*Opções de Orçamento:*
-Orçamento = recompensa de {TASK_REWARD_PER_USER} TON por participante
+*Multiplicador de Orçamento:*
+Apenas 1/{TASK_BUDGET_MULTIPLIER} do seu orçamento é distribuído como recompensa.
+Ex: Se você pagar 1 TON, a recompensa total distribuída será {1/TASK_BUDGET_MULTIPLIER:.2f} TON.
+
 ━━━━━━━━━━━━━━━━
 Selecione o tipo de tarefa:""",
         }
@@ -1272,7 +1266,6 @@ Selecione o tipo de tarefa:""",
         send_message(uid, msgs.get(lang, msgs['en']), reply_markup=keyboard)
 
     def pub_type_selected(self, uid, task_type, cb_id):
-        """Görev türü seçildi"""
         user = self.db.get_user(uid)
         if not user:
             return
@@ -1287,7 +1280,7 @@ Selecione o tipo de tarefa:""",
         tname  = type_names.get(lang, type_names['en']).get(task_type, task_type)
         reward = TASK_REWARDS.get(task_type, 0.001)
         msgs   = {
-            'tr':    f"✅ Tür: *{tname}*\n💎 Katılımcı başı ödül: `{reward} TON`\n\n📌 *Görev başlığını gir:*\n_(Kısa ve çekici, örn: TaskizBot\'u Başlat!)_",
+            'tr':    f"✅ Tür: *{tname}*\n💎 Katılımcı başı ödül: `{reward} TON`\n\n📌 *Görev başlığını gir:*\n_(Kısa ve çekici, örn: TaskizBot'u Başlat!)_",
             'en':    f"✅ Type: *{tname}*\n💎 Reward per user: `{reward} TON`\n\n📌 *Enter task title:*\n_(Short and catchy, e.g: Start TaskizBot!)_",
             'pt_br': f"✅ Tipo: *{tname}*\n💎 Recompensa por usuário: `{reward} TON`\n\n📌 *Digite o título da tarefa:*\n_(Curto e atraente, ex: Iniciar TaskizBot!)_",
         }
@@ -1295,7 +1288,6 @@ Selecione o tipo de tarefa:""",
                      reply_markup={'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel'}]]})
 
     def pub_handle_step(self, uid, text):
-        """Görev oluşturma adımları (metin girişi)"""
         user   = self.db.get_user(uid)
         if not user:
             return
@@ -1340,7 +1332,6 @@ Selecione o tipo de tarefa:""",
             tt = state.get('task_type', '')
 
             if tt in ('channel_join', 'group_join'):
-                # Admin kontrolü adımı
                 state['action'] = 'pub_admin_check'
                 self.states[uid] = state
                 type_word = {'tr': {'channel_join': 'kanalına', 'group_join': 'grubuna'},
@@ -1358,7 +1349,6 @@ Selecione o tipo de tarefa:""",
                     [{'text': '❌ İptal', 'callback_data': 'cancel'}],
                 ]})
             elif tt == 'bot_start':
-                # Bot görevi için forward mesajı iste
                 state['action'] = 'pub_forward_wait'
                 self.states[uid] = state
                 fw_msgs = {
@@ -1384,7 +1374,6 @@ Selecione o tipo de tarefa:""",
                 send_message(uid, T(lang, 'bad_num'), reply_markup=cancel_kb)
 
     def _show_budget_select(self, uid, lang):
-        """Bütçe seçim ekranı — görev türüne göre ödül hesapla"""
         state   = self.states.get(uid, {})
         tt      = state.get('task_type', 'channel_join')
         reward  = TASK_REWARDS.get(tt, 0.001)
@@ -1395,14 +1384,17 @@ Selecione o tipo de tarefa:""",
         }
         tname = type_labels.get(lang, type_labels['en']).get(tt, tt)
         msgs = {
-            'tr':    f"💰 *BÜTÇE SEÇ* — {tname}\n\n💎 Katılımcı başı ödül: `{reward} TON`\n👥 Katılımcı = Bütçe ÷ {reward}\n\nBakiyenden düşülecek:",
-            'en':    f"💰 *SELECT BUDGET* — {tname}\n\n💎 Reward per user: `{reward} TON`\n👥 Participants = Budget ÷ {reward}\n\nWill be deducted from your balance:",
-            'pt_br': f"💰 *SELECIONAR ORÇAMENTO* — {tname}\n\n💎 Recompensa por usuário: `{reward} TON`\n👥 Participantes = Orçamento ÷ {reward}\n\nSerá deduzido do seu saldo:",
+            'tr':    f"💰 *BÜTÇE SEÇ* — {tname}\n\n💎 Katılımcı başı ödül: `{reward} TON`\nÇarpan: 1/{TASK_BUDGET_MULTIPLIER}\n\n*Nasıl hesaplanır?*\nKatılımcı sayısı = (Bütçe / {TASK_BUDGET_MULTIPLIER}) / {reward}\nYani bütçenin 1/{TASK_BUDGET_MULTIPLIER} kadarı ödül olarak dağıtılır.\n\nBakiyenden düşülecek miktar = Bütçe",
+            'en':    f"💰 *SELECT BUDGET* — {tname}\n\n💎 Reward per user: `{reward} TON`\nMultiplier: 1/{TASK_BUDGET_MULTIPLIER}\n\n*How it works:*\nParticipants = (Budget / {TASK_BUDGET_MULTIPLIER}) / {reward}\nOnly 1/{TASK_BUDGET_MULTIPLIER} of your budget is distributed as rewards.\n\nDeducted from balance = Budget",
+            'pt_br': f"💰 *SELECIONAR ORÇAMENTO* — {tname}\n\n💎 Recompensa por usuário: `{reward} TON`\nMultiplicador: 1/{TASK_BUDGET_MULTIPLIER}\n\n*Como funciona:*\nParticipantes = (Orçamento / {TASK_BUDGET_MULTIPLIER}) / {reward}\nApenas 1/{TASK_BUDGET_MULTIPLIER} do seu orçamento é distribuído como recompensa.\n\nDeduzido do saldo = Orçamento",
         }
         buttons = []
         for budget in TASK_BUDGET_OPTIONS:
-            participants = int(budget / reward)
-            buttons.append([{'text': f"💎 {budget} TON → {participants} katılımcı  ({reward} TON/kişi)",
+            total_reward = budget / TASK_BUDGET_MULTIPLIER
+            max_p = int(total_reward / reward)
+            if max_p < 1:
+                max_p = 1
+            buttons.append([{'text': f"💎 {budget} TON → {max_p} katılımcı  ({reward} TON/kişi)",
                              'callback_data': f"pub_budget_{budget}"}])
         custom_labels = {'tr': '✏️ Özel Miktar Gir', 'en': '✏️ Enter Custom Amount', 'pt_br': '✏️ Digitar Valor Personalizado'}
         buttons.append([{'text': custom_labels.get(lang, custom_labels['en']),
@@ -1411,7 +1403,6 @@ Selecione o tipo de tarefa:""",
         send_message(uid, msgs.get(lang, msgs['en']), reply_markup={'inline_keyboard': buttons})
 
     def _pub_budget_chosen(self, uid, lang, budget):
-        """Bütçe seçildi, onay ekranı göster"""
         user = self.db.get_user(uid)
         if not user:
             return
@@ -1431,14 +1422,24 @@ Selecione o tipo de tarefa:""",
         state  = self.states.get(uid, {})
         tt     = state.get('task_type', 'channel_join')
         reward = TASK_REWARDS.get(tt, 0.001)
-        max_p  = max(1, int(budget / reward))
-        state['budget']  = budget
+        total_reward = budget / TASK_BUDGET_MULTIPLIER
+        max_p  = max(1, int(total_reward / reward))
+        # Kesin budget = max_p * reward * TASK_BUDGET_MULTIPLIER (kullanıcıya gösterilen budget ile aynı olmayabilir)
+        exact_budget = max_p * reward * TASK_BUDGET_MULTIPLIER
+        # Ama biz kullanıcının girdiği budget'i kullanacağız, küsurat olursa max_p'yi biraz ayarlayabiliriz.
+        # Daha doğru: max_p = floor(budget / (reward * TASK_BUDGET_MULTIPLIER))
+        # Bu şekilde budget'in tamamı kullanılır.
+        max_p = int(budget / (reward * TASK_BUDGET_MULTIPLIER))
+        if max_p < 1:
+            max_p = 1
+        # Yeni budget = max_p * reward * TASK_BUDGET_MULTIPLIER
+        exact_budget = max_p * reward * TASK_BUDGET_MULTIPLIER
+        state['budget']  = exact_budget
         state['max_p']   = max_p
         state['reward']  = reward
         state['action']  = 'pub_confirm'
         self.states[uid] = state
 
-        # Direkt onay ekranına git
         self._show_pub_confirm(uid, lang, state)
 
     def _show_pub_confirm(self, uid, lang, state):
@@ -1461,7 +1462,8 @@ Selecione o tipo de tarefa:""",
 🎯 Hedef:      @{state.get('target_username', '—')}
 💎 Ödül/kişi: `{state.get('reward', 0):.4f} TON`
 👥 Max:        `{state.get('max_p', 0)} kişi`
-💰 Toplam:     `{state.get('budget', 0):.4f} TON`{fwd_info}
+💰 Toplam ödül dağıtılacak: `{state.get('reward',0)*state.get('max_p',0):.4f} TON`
+💳 Ödeyeceğiniz: `{state.get('budget', 0):.4f} TON`{fwd_info}
 ━━━━━━━━━━━━━━━━
 Onaylıyor musun?""",
             'en': f"""✅ *TASK PREVIEW*
@@ -1471,7 +1473,8 @@ Onaylıyor musun?""",
 🎯 Target:     @{state.get('target_username', '—')}
 💎 Reward:    `{state.get('reward', 0):.4f} TON`/user
 👥 Max:       `{state.get('max_p', 0)} users`
-💰 Total:     `{state.get('budget', 0):.4f} TON`{fwd_info}
+💰 Total reward distributed: `{state.get('reward',0)*state.get('max_p',0):.4f} TON`
+💳 You pay:   `{state.get('budget', 0):.4f} TON`{fwd_info}
 ━━━━━━━━━━━━━━━━
 Confirm?""",
             'pt_br': f"""✅ *PRÉVIA DA TAREFA*
@@ -1481,7 +1484,8 @@ Confirm?""",
 🎯 Alvo:       @{state.get('target_username', '—')}
 💎 Recompensa:`{state.get('reward', 0):.4f} TON`/usuário
 👥 Máx:       `{state.get('max_p', 0)} usuários`
-💰 Total:     `{state.get('budget', 0):.4f} TON`{fwd_info}
+💰 Total recompensa distribuída: `{state.get('reward',0)*state.get('max_p',0):.4f} TON`
+💳 Você paga: `{state.get('budget', 0):.4f} TON`{fwd_info}
 ━━━━━━━━━━━━━━━━
 Confirmar?""",
         }
@@ -1495,14 +1499,12 @@ Confirmar?""",
         send_message(uid, msgs.get(lang, msgs['en']), reply_markup=keyboard)
 
     def pub_handle_forward(self, uid, message):
-        """Kullanıcı forward mesajı gönderdi"""
         user  = self.db.get_user(uid)
         state = self.states.get(uid, {})
         if state.get('action') != 'pub_forward_wait':
             return False
         lang = user['language'] if user else 'tr'
 
-        # Forward bilgilerini çıkar
         fwd_chat     = (message.get('forward_from_chat') or
                         message.get('forward_origin', {}).get('chat', {}))
         fwd_msg_id   = (message.get('forward_from_message_id') or
@@ -1534,7 +1536,6 @@ Confirmar?""",
         return True
 
     def pub_save(self, uid, cb_id):
-        """Görevi kaydet ve bakiyeyi düş"""
         user  = self.db.get_user(uid)
         state = self.states.get(uid, {})
         if not user or not state:
@@ -1547,15 +1548,14 @@ Confirmar?""",
             send_message(uid, T(lang, 'wd_low', min=budget, bal=f"{user['balance']:.4f}"))
             return
 
-        # Bakiyeden düş
         self.db.q('UPDATE users SET balance=balance-? WHERE user_id=?', (budget, uid))
         self.db.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
                   (uid, -budget, 'task_budget', state.get('title', '')))
 
         tid = self.db.create_task(
             title           = state.get('title', 'Görev'),
-            description     = '',
-            reward          = state.get('reward', TASK_REWARD_PER_USER),
+            description     = state.get('description', ''),
+            reward          = state.get('reward', TASK_REWARDS.get(state.get('task_type'),0.001)),
             max_p           = state.get('max_p', 100),
             task_type       = state.get('task_type', 'channel_join'),
             target_username = state.get('target_username', ''),
@@ -1570,9 +1570,9 @@ Confirmar?""",
             del self.states[uid]
 
         success_msgs = {
-            'tr': f"🎉 *Görev #{tid} Yayınlandı!*\n\n📌 {state.get('title','')}\n💎 Bütçe: `{budget:.4f} TON`\n👥 Max: `{state.get('max_p',0)} kişi`\n\nGöreviniz artık herkese görünür!",
-            'en': f"🎉 *Task #{tid} Published!*\n\n📌 {state.get('title','')}\n💎 Budget: `{budget:.4f} TON`\n👥 Max: `{state.get('max_p',0)} users`\n\nYour task is now visible to everyone!",
-            'pt_br': f"🎉 *Tarefa #{tid} Publicada!*\n\n📌 {state.get('title','')}\n💎 Orçamento: `{budget:.4f} TON`\n👥 Máx: `{state.get('max_p',0)} usuários`\n\nSua tarefa agora está visível para todos!",
+            'tr': f"🎉 *Görev #{tid} Yayınlandı!*\n\n📌 {state.get('title','')}\n💳 Ödediğiniz: `{budget:.4f} TON`\n👥 Max: `{state.get('max_p',0)} kişi`\n\nGöreviniz artık herkese görünür!",
+            'en': f"🎉 *Task #{tid} Published!*\n\n📌 {state.get('title','')}\n💳 You paid: `{budget:.4f} TON`\n👥 Max: `{state.get('max_p',0)} users`\n\nYour task is now visible to everyone!",
+            'pt_br': f"🎉 *Tarefa #{tid} Publicada!*\n\n📌 {state.get('title','')}\n💳 Você pagou: `{budget:.4f} TON`\n👥 Máx: `{state.get('max_p',0)} usuários`\n\nSua tarefa agora está visível para todos!",
         }
         send_message(uid, success_msgs.get(lang, success_msgs['en']),
                      reply_markup={'inline_keyboard': [
@@ -1580,9 +1580,8 @@ Confirmar?""",
                          [{'text': '🎯 Görevleri Gör', 'callback_data': 'show_tasks'}],
                          [{'text': '🏠 Menü',          'callback_data': 'main_menu'}],
                      ]})
-        # İstatistik kanalına bildir
         try:
-            send_message(STATS_CHANNEL, f"🛠️ *YENİ GÖREV #{tid}*\n{state.get('title','')}\n💎 {budget:.4f} TON | 👤 {uid}")
+            send_message(STATS_CHANNEL, f"🛠️ *YENİ GÖREV #{tid}*\n{state.get('title','')}\n💳 {budget:.4f} TON | 👤 {uid}")
         except:
             pass
 
@@ -1670,9 +1669,9 @@ Confirmar?""",
 ━━━━━━━━━━━━━━━━
 👥 Katılım: `{filled}/{total}` [{bar}]
 💎 Ödül/kişi: `{task['reward']:.4f} TON`
-💰 Toplam bütçe: `{task['budget']:.4f} TON`
-✅ Harcanan: `{spent:.4f} TON`
-💵 Kalan: `{remain:.4f} TON`
+💰 Toplam ödül dağıtıldı: `{spent:.4f} TON`
+💳 Ödediğiniz bütçe: `{task['budget']:.4f} TON`
+💵 Kalan bütçe: `{remain:.4f} TON`
 ━━━━━━━━━━━━━━━━""",
             'en': f"""📋 *TASK #{tid}*
 ━━━━━━━━━━━━━━━━
@@ -1683,9 +1682,9 @@ Confirmar?""",
 ━━━━━━━━━━━━━━━━
 👥 Joined: `{filled}/{total}` [{bar}]
 💎 Reward/user: `{task['reward']:.4f} TON`
-💰 Total budget: `{task['budget']:.4f} TON`
-✅ Spent: `{spent:.4f} TON`
-💵 Remaining: `{remain:.4f} TON`
+💰 Total reward distributed: `{spent:.4f} TON`
+💳 Your budget: `{task['budget']:.4f} TON`
+💵 Remaining budget: `{remain:.4f} TON`
 ━━━━━━━━━━━━━━━━""",
         }
         keyboard_rows = []
@@ -1704,7 +1703,6 @@ Confirmar?""",
         send_message(uid, msgs.get(lang, msgs['en']), reply_markup={'inline_keyboard': keyboard_rows})
 
     def show_extend_task(self, uid, tid, cb_id=None):
-        """Göreve bütçe ekle ekranı"""
         user = self.db.get_user(uid)
         if not user:
             return
@@ -1740,15 +1738,17 @@ How much to add?""",
         }
         buttons = []
         for budget in TASK_BUDGET_OPTIONS:
-            participants = int(budget / reward)
-            buttons.append([{'text': f"💎 +{budget} TON → +{participants} kişi daha",
+            # Eklenen bütçe ile yeni katılımcı sayısı
+            extra_participants = int(budget / (reward * TASK_BUDGET_MULTIPLIER))
+            if extra_participants < 1:
+                extra_participants = 1
+            buttons.append([{'text': f"💎 +{budget} TON → +{extra_participants} kişi daha",
                              'callback_data': f"extend_budget_{tid}_{budget}"}])
         buttons.append([{'text': '✏️ Özel Miktar', 'callback_data': f'extend_custom_{tid}'}])
         buttons.append([{'text': '🔙 Geri', 'callback_data': f'mytask_{tid}'}])
         send_message(uid, msgs.get(lang, msgs['en']), reply_markup={'inline_keyboard': buttons})
 
     def do_extend_task(self, uid, tid, budget, cb_id=None):
-        """Göreve bütçe ekle ve katılımcı sayısını artır"""
         user = self.db.get_user(uid)
         if not user:
             return
@@ -1771,14 +1771,20 @@ How much to add?""",
             return
 
         reward   = task['reward']
-        add_max  = max(1, int(budget / reward))
-
-        # Bakiyeden düş, max_participants artır, bütçe artır, görevi aktif yap
+        extra_p  = int(budget / (reward * TASK_BUDGET_MULTIPLIER))
+        if extra_p < 1:
+            extra_p = 1
+        exact_budget = extra_p * reward * TASK_BUDGET_MULTIPLIER  # daha düşük olabilir, ama biz budget'i kullanıyoruz
+        # Aslında budget'in tamamını ekleyelim, max_p'yi artıralım:
+        extra_p = int(budget / (reward * TASK_BUDGET_MULTIPLIER))
+        if extra_p < 1:
+            extra_p = 1
+        # Yeni max_participants = eski max + extra_p
         self.db.q('UPDATE users SET balance=balance-? WHERE user_id=?', (budget, uid))
         self.db.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
                   (uid, -budget, 'task_extend', f'Görev #{tid} bütçe ekleme'))
         self.db.q('UPDATE tasks SET max_participants=max_participants+?, budget=budget+?, status="active" WHERE id=?',
-                  (add_max, budget, tid))
+                  (extra_p, budget, tid))
         if self.db.fb:
             fresh_task = self.db.get_task(tid)
             if fresh_task:
@@ -1788,21 +1794,23 @@ How much to add?""",
                 self.db.fb.save('users', str(uid), dict(fresh_user))
 
         ok_msgs = {
-            'tr': f"✅ *Bütçe Eklendi!*\n\n📋 Görev #{tid}\n💎 +`{budget:.4f} TON` eklendi\n👥 +`{add_max} kişi` daha alınacak\n\nGörev şimdi aktif ve devam ediyor!",
-            'en': f"✅ *Budget Added!*\n\n📋 Task #{tid}\n💎 +`{budget:.4f} TON` added\n👥 +`{add_max} more users` will be accepted\n\nTask is now active and running!",
+            'tr': f"✅ *Bütçe Eklendi!*\n\n📋 Görev #{tid}\n💎 +`{budget:.4f} TON` eklendi\n👥 +`{extra_p} kişi` daha alınacak\n\nGörev şimdi aktif ve devam ediyor!",
+            'en': f"✅ *Budget Added!*\n\n📋 Task #{tid}\n💎 +`{budget:.4f} TON` added\n👥 +`{extra_p} more users` will be accepted\n\nTask is now active and running!",
         }
         send_message(uid, ok_msgs.get(lang, ok_msgs['en']), reply_markup={'inline_keyboard': [
             [{'text': '📋 Görevlerim', 'callback_data': 'show_my_tasks'}],
             [{'text': '🏠 Menü', 'callback_data': 'main_menu'}],
         ]})
+
+    # ──────────────────────────────────────────
+    #   DİĞER MENÜLER
+    # ──────────────────────────────────────────
     def show_balance(self, uid):
         user = self.db.get_user(uid)
         if not user:
             return
         lang = user['language']
-        # Kanaldan ayrıldıysa ceza uygula
         penalty = self.db.check_and_penalize_left_channels(uid)
-        # Güncel bakiyeyle devam et
         user = self.db.get_user(uid)
         if penalty and penalty > 0:
             pen_str = f"{penalty:.4f}"
@@ -2010,7 +2018,7 @@ How much to add?""",
 1️⃣ *Görevler:*
    📢 Kanal → Katıl, doğrula, kazan
    👥 Grup → Katıl, doğrula, kazan
-   🤖 Bot → Başlat, onayla, kazan
+   🤖 Bot → Başlat, forward et, kazan
 
 2️⃣ *Çekim:* Min. `{MIN_WITHDRAW} TON`
 
@@ -2019,7 +2027,7 @@ How much to add?""",
 
 4️⃣ *Görev Yayınla:*
    Kendi kanalın için görev oluştur
-   Bakiyenden bütçe seç, yayınla!
+   Bütçe çarpanı: ödediğinin 1/{TASK_BUDGET_MULTIPLIER} kadarı ödül olur
 
 ━━━━━━━━━━━━━━━━
 /start /tasks /balance /withdraw""",
@@ -2030,7 +2038,7 @@ How much to add?""",
 1️⃣ *Tasks:*
    📢 Channel → Join, verify, earn
    👥 Group → Join, verify, earn
-   🤖 Bot → Start, confirm, earn
+   🤖 Bot → Start, forward, earn
 
 2️⃣ *Withdraw:* Min. `{MIN_WITHDRAW} TON`
 
@@ -2039,7 +2047,7 @@ How much to add?""",
 
 4️⃣ *Publish Task:*
    Create tasks for your own channel
-   Choose budget from balance, publish!
+   Budget multiplier: only 1/{TASK_BUDGET_MULTIPLIER} of your payment is rewarded
 
 ━━━━━━━━━━━━━━━━
 /start /tasks /balance /withdraw""",
@@ -2050,7 +2058,7 @@ How much to add?""",
 1️⃣ *Tarefas:*
    📢 Canal → Entrar, verificar, ganhar
    👥 Grupo → Entrar, verificar, ganhar
-   🤖 Bot → Iniciar, confirmar, ganhar
+   🤖 Bot → Iniciar, encaminhar, ganhar
 
 2️⃣ *Saque:* Mín. `{MIN_WITHDRAW} TON`
 
@@ -2059,7 +2067,7 @@ How much to add?""",
 
 4️⃣ *Publicar Tarefa:*
    Crie tarefas para seu próprio canal
-   Escolha orçamento do saldo, publique!
+   Multiplicador de orçamento: apenas 1/{TASK_BUDGET_MULTIPLIER} do seu pagamento é recompensado
 
 ━━━━━━━━━━━━━━━━
 /start /tasks /balance /withdraw""",
@@ -2200,7 +2208,6 @@ How much to add?""",
             new = self.db.toggle_task(tid)
             lbl = '🟢 Aktif' if new == 'active' else '🔴 Pasif'
             answer_callback(cb_id, f"{lbl} yapıldı!", True)
-            # Detayı yenile
             task = self.db.get_task(tid)
             if task:
                 self.handle_admin_cb(uid, f'admin_task_{tid}', cb_id)
@@ -2303,12 +2310,14 @@ How much to add?""",
         text       = msg.get('text', '')
         is_forward = 'forward_from_chat' in msg or 'forward_origin' in msg
 
-        # Forward mesajı — görev oluşturma için
-        if is_forward:
-            state = self.states.get(uid, {})
-            if state.get('action') == 'pub_forward_wait':
-                self.pub_handle_forward(uid, msg)
-                return
+        state = self.states.get(uid, {})
+        if is_forward and state.get('action') == 'wait_bot_forward':
+            self.handle_bot_forward(uid, msg, state['task_id'])
+            return
+
+        if is_forward and state.get('action') == 'pub_forward_wait':
+            self.pub_handle_forward(uid, msg)
+            return
 
         if not text:
             return
@@ -2318,7 +2327,6 @@ How much to add?""",
             send_message(uid, "🚫 Hesabınız askıya alınmıştır.")
             return
 
-        # Admin komutları
         if str(uid) in ADMIN_IDS:
             if text == '/admin':
                 if not user:
@@ -2335,7 +2343,6 @@ How much to add?""",
                 self.handle_admin_cmd(uid, text)
                 return
 
-        # Referans kodu çıkar
         referred_by = None
         if text.startswith('/start'):
             parts = text.split()
@@ -2345,7 +2352,6 @@ How much to add?""",
                 if row and row[0] != uid:
                     referred_by = row[0]
 
-        # Yeni kullanıcı
         if not user:
             user = self.db.create_user(uid, msg['from'].get('username',''),
                                        msg['from'].get('first_name',''),
@@ -2360,15 +2366,12 @@ How much to add?""",
             return
 
         self.db.update_active(uid)
-        state  = self.states.get(uid, {})
         action = state.get('action', '')
 
-        # Aktif görev oluşturma adımları
         if action.startswith('pub_'):
             self.pub_handle_step(uid, text)
             return
 
-        # Çekim adımları
         if action == 'wd_amount':
             lang = user['language']
             try:
@@ -2480,18 +2483,15 @@ How much to add?""",
         lang = user['language'] if user else 'tr'
 
         try:
-            # Admin callback'ler
             if str(uid) in ADMIN_IDS and data.startswith('admin_'):
                 self.handle_admin_cb(uid, data, cb_id)
                 return
 
-            # Dil seçimi
             if data.startswith('lang_'):
                 new_lang = data[5:]
                 if new_lang in SUPPORTED_LANGUAGES:
                     self.db.set_lang(uid, new_lang)
                     answer_callback(cb_id, "✅ Dil seçildi!")
-                    # Referansı aktifleştir
                     fresh = self.db.get_user(uid)
                     if fresh and fresh.get('referred_by'):
                         missing = self.missing_channels(uid)
@@ -2505,7 +2505,6 @@ How much to add?""",
                     self.show_menu(uid, new_lang)
                 return
 
-            # Kanal kontrolü
             if data == 'check_channels':
                 missing = self.missing_channels(uid)
                 if missing:
@@ -2527,7 +2526,6 @@ How much to add?""",
                     self.show_menu(uid, lang)
                 return
 
-            # Görev yayınlama
             if data.startswith('pub_type_'):
                 tt = data[len('pub_type_'):]
                 self.pub_type_selected(uid, tt, cb_id)
@@ -2558,82 +2556,9 @@ How much to add?""",
                 self.pub_save(uid, cb_id)
                 return
 
-            # Görevler
-            if data == 'show_tasks' or data == 'refresh_tasks':
-                self.show_tasks(uid)
-                if data == 'refresh_tasks':
-                    answer_callback(cb_id, "🔄 Yenilendi!")
-                return
-
-            # Görevlerim
-            if data == 'show_my_tasks':
-                answer_callback(cb_id)
-                self.show_my_tasks(uid)
-                return
-
-            if data.startswith('mytask_'):
-                tid = int(data[7:])
-                self.show_my_task_detail(uid, tid, cb_id)
-                return
-
-            if data.startswith('extend_task_'):
-                tid = int(data[12:])
-                self.show_extend_task(uid, tid, cb_id)
-                return
-
-            if data.startswith('extend_budget_'):
-                parts = data.split('_')
-                # extend_budget_TID_BUDGET
-                tid    = int(parts[2])
-                budget = float(parts[3])
-                self.do_extend_task(uid, tid, budget, cb_id)
-                return
-
-            if data.startswith('extend_custom_'):
-                tid = int(data[14:])
-                answer_callback(cb_id)
-                self.states[uid] = {'action': 'extend_custom', 'extend_tid': tid}
-                send_message(uid, "✏️ Eklemek istediğin bütçe miktarını gir (TON):",
-                             reply_markup={'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel'}]]})
-                return
-
-            if data.startswith('pause_task_'):
-                tid = int(data[11:])
-                task = self.db.get_task(tid)
-                if task and task['created_by'] == uid:
-                    self.db.q("UPDATE tasks SET status='inactive' WHERE id=?", (tid,))
-                    answer_callback(cb_id, "🔴 Görev durduruldu!", True)
-                    self.show_my_task_detail(uid, tid)
-                return
-
-            if data.startswith('resume_task_'):
-                tid = int(data[12:])
-                task = self.db.get_task(tid)
-                if task and task['created_by'] == uid:
-                    # Kalan bütçe var mı kontrol et
-                    remain = max(0, task['budget'] - task['current_participants'] * task['reward'])
-                    if remain <= 0 or task['current_participants'] >= task['max_participants']:
-                        low_msgs = {
-                            'tr': f"❌ *Bütçe Bitti!*\n\nGörevi devam ettirmek için bütçe eklemeniz gerekiyor.\n\nBakiye yüklemek için {SUPPORT_USERNAME} ile iletişime geçin.",
-                            'en': f"❌ *Budget Exhausted!*\n\nYou need to add budget to continue the task.\n\nContact {SUPPORT_USERNAME} to add balance.",
-                        }
-                        send_message(uid, low_msgs.get(lang, low_msgs['en']), reply_markup={'inline_keyboard': [
-                            [{'text': f'📞 {SUPPORT_USERNAME}', 'url': f'https://t.me/{SUPPORT_USERNAME[1:]}'}],
-                            [{'text': '💰 Bütçe Ekle', 'callback_data': f'extend_task_{tid}'}],
-                        ]})
-                        answer_callback(cb_id)
-                    else:
-                        self.db.q("UPDATE tasks SET status='active' WHERE id=?", (tid,))
-                        answer_callback(cb_id, "🟢 Görev devam ediyor!", True)
-                        self.show_my_task_detail(uid, tid)
-                return
-
-            # Admin check for channel/group task creation
             if data.startswith('pub_check_admin_'):
                 answer_callback(cb_id)
-                # pub_check_admin_USERNAME_TASKTYPE
                 rest = data[len('pub_check_admin_'):]
-                # find task_type at end
                 for tt in ('channel_join', 'group_join'):
                     if rest.endswith('_' + tt):
                         username = rest[:-(len(tt)+1)]
@@ -2643,12 +2568,7 @@ How much to add?""",
                     tt = 'channel_join'
 
                 target = f"@{username}"
-                # Bot'un admin olup olmadığını kontrol et
                 try:
-                    r = requests.post(BASE_URL + "getChatMember",
-                                      json={"chat_id": target, "user_id": int(BASE_URL.split('bot')[1].split('/')[0]) if False else 0},
-                                      timeout=8)
-                    # Bot'un kendi ID'sini almak için getMe kullan
                     me = requests.get(BASE_URL + "getMe", timeout=5).json()
                     bot_id = me['result']['id'] if me.get('ok') else 0
                     r2 = requests.post(BASE_URL + "getChatMember",
@@ -2702,7 +2622,82 @@ How much to add?""",
                 self.done_bot_task(uid, tid, cb_id)
                 return
 
-            # Diğer
+            if data.startswith('forward_bot_'):
+                tid = int(data.split('_')[-1])
+                answer_callback(cb_id, "📨 Şimdi botun mesajını forward edin!")
+                self.states[uid] = {'action': 'wait_bot_forward', 'task_id': tid}
+                send_message(uid,
+                    "🤖 Lütfen botu başlatın ve botun gönderdiği herhangi bir mesajı **bu sohbete forward edin**.\n\n"
+                    "Forward işlemi için mesajın üzerine tıklayıp 'İlet' seçeneğini kullanın.",
+                    reply_markup={'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel'}]]})
+                return
+
+            if data == 'show_tasks' or data == 'refresh_tasks':
+                self.show_tasks(uid)
+                if data == 'refresh_tasks':
+                    answer_callback(cb_id, "🔄 Yenilendi!")
+                return
+
+            if data == 'show_my_tasks':
+                answer_callback(cb_id)
+                self.show_my_tasks(uid)
+                return
+
+            if data.startswith('mytask_'):
+                tid = int(data[7:])
+                self.show_my_task_detail(uid, tid, cb_id)
+                return
+
+            if data.startswith('extend_task_'):
+                tid = int(data[12:])
+                self.show_extend_task(uid, tid, cb_id)
+                return
+
+            if data.startswith('extend_budget_'):
+                parts = data.split('_')
+                tid    = int(parts[2])
+                budget = float(parts[3])
+                self.do_extend_task(uid, tid, budget, cb_id)
+                return
+
+            if data.startswith('extend_custom_'):
+                tid = int(data[14:])
+                answer_callback(cb_id)
+                self.states[uid] = {'action': 'extend_custom', 'extend_tid': tid}
+                send_message(uid, "✏️ Eklemek istediğin bütçe miktarını gir (TON):",
+                             reply_markup={'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel'}]]})
+                return
+
+            if data.startswith('pause_task_'):
+                tid = int(data[11:])
+                task = self.db.get_task(tid)
+                if task and task['created_by'] == uid:
+                    self.db.q("UPDATE tasks SET status='inactive' WHERE id=?", (tid,))
+                    answer_callback(cb_id, "🔴 Görev durduruldu!", True)
+                    self.show_my_task_detail(uid, tid)
+                return
+
+            if data.startswith('resume_task_'):
+                tid = int(data[12:])
+                task = self.db.get_task(tid)
+                if task and task['created_by'] == uid:
+                    remain = max(0, task['budget'] - task['current_participants'] * task['reward'])
+                    if remain <= 0 or task['current_participants'] >= task['max_participants']:
+                        low_msgs = {
+                            'tr': f"❌ *Bütçe Bitti!*\n\nGörevi devam ettirmek için bütçe eklemeniz gerekiyor.\n\nBakiye yüklemek için {SUPPORT_USERNAME} ile iletişime geçin.",
+                            'en': f"❌ *Budget Exhausted!*\n\nYou need to add budget to continue the task.\n\nContact {SUPPORT_USERNAME} to add balance.",
+                        }
+                        send_message(uid, low_msgs.get(lang, low_msgs['en']), reply_markup={'inline_keyboard': [
+                            [{'text': f'📞 {SUPPORT_USERNAME}', 'url': f'https://t.me/{SUPPORT_USERNAME[1:]}'}],
+                            [{'text': '💰 Bütçe Ekle', 'callback_data': f'extend_task_{tid}'}],
+                        ]})
+                        answer_callback(cb_id)
+                    else:
+                        self.db.q("UPDATE tasks SET status='active' WHERE id=?", (tid,))
+                        answer_callback(cb_id, "🟢 Görev devam ediyor!", True)
+                        self.show_my_task_detail(uid, tid)
+                return
+
             routes = {
                 'main_menu':      lambda: self.show_menu(uid, lang),
                 'show_balance':   lambda: self.show_balance(uid),
@@ -2712,7 +2707,6 @@ How much to add?""",
                 'show_settings':  lambda: self.show_settings(uid),
                 'change_lang':    lambda: self.show_lang_select(uid),
                 'show_publish':   lambda: self.show_task_publish(uid),
-                'show_my_tasks':  lambda: self.show_my_tasks(uid),
             }
 
             if data in routes:
