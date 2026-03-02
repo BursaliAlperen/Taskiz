@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import base64
 import requests
 from datetime import datetime
 import threading
@@ -38,6 +39,7 @@ if not TOKEN:
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "")
+FIREBASE_CREDENTIALS_FILE = os.environ.get("FIREBASE_CREDENTIALS_FILE", "taskiz-2db5a-firebase-adminsdk-fbsvc-98e0792e57.json")
 FIREBASE_PROJECT_ID       = os.environ.get("FIREBASE_PROJECT_ID", "taskiz-2db5a")
 FIREBASE_DATABASE_URL     = os.environ.get("FIREBASE_DATABASE_URL", "https://taskiz-2db5a-default-rtdb.firebaseio.com/")
 
@@ -69,6 +71,7 @@ TASK_REWARDS = {
 
 # Varsayılan katılımcı başı ödül
 TASK_REWARD_PER_USER = 0.0025
+AD_PAYOUT_DIVISOR    = 1.5   # Reklam veren 1.5x öder, kullanıcılara 1x dağıtılır
 
 # ════════════════════════════════════════════
 #              FLASK
@@ -91,10 +94,15 @@ def _post(method, payload, timeout=10):
         return None
 
 def send_message(chat_id, text, reply_markup=None, parse_mode='Markdown'):
-    p = {'chat_id': chat_id, 'text': text, 'parse_mode': parse_mode, 'disable_web_page_preview': True}
+    p = {'chat_id': chat_id, 'text': text, 'disable_web_page_preview': True}
+    if parse_mode:
+        p['parse_mode'] = parse_mode
     if reply_markup:
         p['reply_markup'] = json.dumps(reply_markup)
-    return _post("sendMessage", p)
+    resp = _post("sendMessage", p)
+    if resp and not resp.get('ok', False):
+        print(f"sendMessage failed chat={chat_id}: {resp.get('description','unknown')}")
+    return resp
 
 def copy_message(chat_id, from_chat_id, message_id, reply_markup=None, caption=None):
     """Mesajı orijinal formatta kopyala (forward gibi ama "Forwarded from" yazısı olmadan)"""
@@ -157,33 +165,60 @@ class FirebaseClient:
     SQLite  = Hizli okuma icin yerel onbellek.
     Her deploy sonrasi SQLite sifirlanir ama Firebase kalicidir.
     """
+    def _load_cred_dict(self):
+        raw = (FIREBASE_CREDENTIALS_JSON or '').strip()
+        if raw:
+            # 1) normal JSON
+            try:
+                return json.loads(raw)
+            except Exception:
+                pass
+            # 2) base64 JSON
+            try:
+                return json.loads(base64.b64decode(raw).decode('utf-8'))
+            except Exception:
+                pass
+            # 3) file path accidentally passed in JSON var
+            if os.path.exists(raw):
+                with open(raw, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            raise ValueError('FIREBASE_CREDENTIALS_JSON formatı geçersiz (json/base64/path değil)')
+
+        if FIREBASE_CREDENTIALS_FILE and os.path.exists(FIREBASE_CREDENTIALS_FILE):
+            with open(FIREBASE_CREDENTIALS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+
+        raise ValueError('Firebase credentials bulunamadı. FIREBASE_CREDENTIALS_JSON veya FIREBASE_CREDENTIALS_FILE ayarlayın')
+
     def __init__(self):
         self.enabled = False
         self.fs   = None
         self._queue  = []
         self._qlock  = threading.Lock()
 
-        # FIREBASE_DATABASE_URL is module-level env var
-        cred_json = FIREBASE_CREDENTIALS_JSON or ''
-        project   = FIREBASE_PROJECT_ID or ''
-
-        if not cred_json or not project:
-            print('WARNING Firebase env vars eksik -- sadece SQLite kullanilacak')
+        project = FIREBASE_PROJECT_ID or ''
+        if not project:
+            print('WARNING FIREBASE_PROJECT_ID eksik -- sadece SQLite kullanilacak')
             return
+
         try:
-            cred = credentials.Certificate(json.loads(cred_json))
+            cred_dict = self._load_cred_dict()
+            cred = credentials.Certificate(cred_dict)
             if not firebase_admin._apps:
                 opts = {'projectId': project}
-                if FIREBASE_DATABASE_URL:  # noqa
+                if FIREBASE_DATABASE_URL:
                     opts['databaseURL'] = FIREBASE_DATABASE_URL
                 firebase_admin.initialize_app(cred, opts)
             self.fs = firestore.client()
+            # lightweight probe
+            list(self.fs.collection('_healthcheck').limit(1).stream())
             self.enabled = True
             print('Firebase baglandi (Firestore)')
             t = threading.Thread(target=self._flush_loop, daemon=True)
             t.start()
         except Exception as e:
             print(f'Firebase baglanti hatasi: {e}')
+            print('Firebase devre disi birakildi, bot SQLite ile calisacak')
 
     def _flush_loop(self):
         while True:
@@ -338,6 +373,18 @@ class FirebaseClient:
                 pass
         print(f'  {len(pens)} ceza kaydi yuklendi')
 
+        personal = self.load_collection('personal_tasks')
+        for doc_id, t in personal:
+            try:
+                conn.execute(
+                    'INSERT OR REPLACE INTO personal_tasks(id,user_id,title,description,due_date,status,created_at) VALUES(?,?,?,?,?,?,?)',
+                    (int(t.get('id', doc_id)), int(t.get('user_id', 0)), t.get('title', ''),
+                     t.get('description', ''), t.get('due_date', ''), t.get('status', 'active'), t.get('created_at', ''))
+                )
+            except Exception:
+                pass
+        print(f'  {len(personal)} kisisel gorev yuklendi')
+
         conn.commit()
         print('Firebase restore tamamlandi!')
 
@@ -373,6 +420,7 @@ class DB:
                 last_name       TEXT DEFAULT '',
                 language        TEXT DEFAULT 'tr',
                 balance         REAL DEFAULT 0,
+                ad_balance      REAL DEFAULT 0,
                 referral_code   TEXT UNIQUE,
                 referred_by     INTEGER,
                 tasks_completed INTEGER DEFAULT 0,
@@ -461,8 +509,25 @@ class DB:
                 reason     TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS personal_tasks (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER,
+                title      TEXT,
+                description TEXT DEFAULT '',
+                due_date   TEXT DEFAULT '',
+                status     TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         ''')
         self.conn.commit()
+        self._ensure_column('users', 'ad_balance', 'REAL DEFAULT 0')
+
+    def _ensure_column(self, table, column, definition):
+        self.cur.execute(f"PRAGMA table_info({table})")
+        cols = [r[1] for r in self.cur.fetchall()]
+        if column not in cols:
+            self.q(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # ── KULLANICI ────────────────────────────
     def get_user(self, uid):
@@ -569,6 +634,20 @@ class DB:
     def get_all_tasks(self):
         self.cur.execute("SELECT * FROM tasks WHERE status!='deleted' ORDER BY created_at DESC")
         return [dict(r) for r in self.cur.fetchall()]
+
+    def create_personal_task(self, uid, title, description, due_date):
+        self.q('INSERT INTO personal_tasks(user_id,title,description,due_date,status) VALUES(?,?,?,?,"active")',
+               (uid, title, description, due_date))
+        task_id = self.cur.lastrowid
+        if self.fb:
+            row = self.cur.execute('SELECT * FROM personal_tasks WHERE id=?', (task_id,)).fetchone()
+            if row:
+                self.fb.save_now('personal_tasks', str(task_id), dict(row))
+        return task_id
+
+    def get_personal_tasks(self, uid):
+        self.cur.execute('SELECT * FROM personal_tasks WHERE user_id=? ORDER BY created_at DESC', (uid,))
+        return [dict(x) for x in self.cur.fetchall()]
 
     def has_done(self, uid, tid):
         self.cur.execute('SELECT 1 FROM task_completions WHERE user_id=? AND task_id=?', (uid, tid))
@@ -679,6 +758,37 @@ class DB:
 
     def remove_balance(self, uid, amount, admin_id):
         self.q('UPDATE users SET balance=MAX(0,balance-?) WHERE user_id=?', (amount, uid))
+        self.q('INSERT INTO admin_logs(admin_id,action,target_id,details) VALUES(?,?,?,?)',
+               (admin_id, 'remove_balance', uid, f'{amount} TON'))
+        if self.fb:
+            u = self.get_user(uid)
+            if u: self.fb.save('users', str(uid), dict(u))
+
+    def convert_balance_to_ad(self, uid, amount):
+        u = self.get_user(uid)
+        if not u or amount <= 0 or u['balance'] < amount:
+            return False
+        self.q('UPDATE users SET balance=balance-?, ad_balance=ad_balance+? WHERE user_id=?', (amount, amount, uid))
+        self.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
+               (uid, 0, 'balance_convert', f'{amount:.4f} TON -> ad_balance'))
+        if self.fb:
+            fresh = self.get_user(uid)
+            if fresh:
+                self.fb.save('users', str(uid), dict(fresh))
+        return True
+
+    def convert_ad_to_balance(self, uid, amount):
+        u = self.get_user(uid)
+        if not u or amount <= 0 or u.get('ad_balance', 0) < amount:
+            return False
+        self.q('UPDATE users SET ad_balance=ad_balance-?, balance=balance+? WHERE user_id=?', (amount, amount, uid))
+        self.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
+               (uid, 0, 'balance_convert', f'{amount:.4f} TON ad_balance -> main'))
+        if self.fb:
+            fresh = self.get_user(uid)
+            if fresh:
+                self.fb.save('users', str(uid), dict(fresh))
+        return True
 
     def ban(self, uid):
         self.q("UPDATE users SET status='banned' WHERE user_id=?", (uid,))
@@ -769,7 +879,7 @@ _T = {
         'menu_invite':  '👥 Davet',
         'menu_withdraw':'💎 Çekim',
         'menu_profile': '👤 Profil',
-        'menu_tasks_create':'🛠️ Görev Yayınla',
+        'menu_tasks_create':'➕ Görev Oluştur',
         'menu_my_tasks': '📋 Görevlerim',
         'menu_help':    '❓ Yardım',
         'menu_settings':'⚙️ Ayarlar',
@@ -795,7 +905,7 @@ _T = {
         'menu_invite':  '👥 Invite',
         'menu_withdraw':'💎 Withdraw',
         'menu_profile': '👤 Profile',
-        'menu_tasks_create':'🛠️ Publish Task',
+        'menu_tasks_create':'➕ Create Task',
         'menu_my_tasks': '📋 My Tasks',
         'menu_help':    '❓ Help',
         'menu_settings':'⚙️ Settings',
@@ -821,7 +931,7 @@ _T = {
         'menu_invite':  '👥 Convidar',
         'menu_withdraw':'💎 Sacar',
         'menu_profile': '👤 Perfil',
-        'menu_tasks_create':'🛠️ Publicar Tarefa',
+        'menu_tasks_create':'➕ Criar Tarefa',
         'menu_my_tasks': '📋 Minhas Tarefas',
         'menu_help':    '❓ Ajuda',
         'menu_settings':'⚙️ Ajustes',
@@ -863,10 +973,23 @@ def all_menu_labels(key):
 # ════════════════════════════════════════════
 class Bot:
     def __init__(self):
-        fb            = FirebaseClient()
-        self.db       = DB(firebase=fb)
-        self.firebase = fb
-        self.states   = {}   # user_id → dict
+        self.states = {}   # user_id → dict
+        fb = None
+        try:
+            fb = FirebaseClient()
+        except Exception as e:
+            print(f"FirebaseClient init hatası, Firebase kapatılıyor: {e}")
+            fb = None
+
+        try:
+            self.db = DB(firebase=fb)
+            self.firebase = fb
+        except Exception as e:
+            print(f"DB init hatası (firebase={bool(fb)}): {e}")
+            print("Fallback: Firebase olmadan SQLite ile devam ediliyor...")
+            self.db = DB(firebase=None)
+            self.firebase = None
+
         print(f"🤖 {BOT_NAME} hazır!")
 
     # ──────────────────────────────────────────
@@ -913,11 +1036,10 @@ class Bot:
     # ──────────────────────────────────────────
     def main_kb(self, lang, is_admin=False):
         rows = [
-            [T(lang,'menu_balance'),       T(lang,'menu_tasks')],
-            [T(lang,'menu_withdraw'),      T(lang,'menu_invite')],
-            [T(lang,'menu_tasks_create'),  T(lang,'menu_my_tasks')],
-            [T(lang,'menu_profile'),       T(lang,'menu_settings')],
-            [T(lang,'menu_help')],
+            [T(lang,'menu_tasks_create'), T(lang,'menu_my_tasks'), T(lang,'menu_help')],
+            [T(lang,'menu_tasks'),        T(lang,'menu_balance')],
+            [T(lang,'menu_withdraw'),     T(lang,'menu_invite')],
+            [T(lang,'menu_profile'),      T(lang,'menu_settings')],
         ]
         if is_admin:
             rows.append([T(lang,'menu_admin')])
@@ -949,52 +1071,16 @@ class Bot:
                 return
             stars = '⭐' * min(5, max(1, int(user['total_referrals'] / 5) + 1))
             msgs  = {
-                'tr': f"""╔══════════════════════╗
-║   🚀  *{BOT_NAME}*   ║
-╚══════════════════════╝
-👋 Hoş geldin, *{user['first_name']}*! {stars}
-┌──────────────────────
-│ 💎 Bakiye:    `{user['balance']:.4f} TON`
-│ 🎯 Görevler:  `{user['tasks_completed']}`
-│ 👥 Referans:  `{user['total_referrals']}`
-│ 📈 Kazanç:    `{user['total_earned']:.4f} TON`
-└──────────────────────
-💡 Görev tamamla → TON kazan!
-🔗 Davet et → +{REF_WELCOME_BONUS} TON/kişi!
-🛠️ Kendi görevini yayınla!""",
-                'en': f"""╔══════════════════════╗
-║   🚀  *{BOT_NAME}*   ║
-╚══════════════════════╝
-👋 Welcome, *{user['first_name']}*! {stars}
-┌──────────────────────
-│ 💎 Balance:   `{user['balance']:.4f} TON`
-│ 🎯 Tasks:     `{user['tasks_completed']}`
-│ 👥 Referrals: `{user['total_referrals']}`
-│ 📈 Earned:    `{user['total_earned']:.4f} TON`
-└──────────────────────
-💡 Complete tasks → Earn TON!
-🔗 Invite → +{REF_WELCOME_BONUS} TON/person!
-🛠️ Publish your own tasks!""",
-                'pt_br': f"""╔══════════════════════╗
-║   🚀  *{BOT_NAME}*   ║
-╚══════════════════════╝
-👋 Bem-vindo, *{user['first_name']}*! {stars}
-┌──────────────────────
-│ 💎 Saldo:     `{user['balance']:.4f} TON`
-│ 🎯 Tarefas:   `{user['tasks_completed']}`
-│ 👥 Indicações:`{user['total_referrals']}`
-│ 📈 Ganhos:    `{user['total_earned']:.4f} TON`
-└──────────────────────
-💡 Conclua tarefas → Ganhe TON!
-🔗 Convide → +{REF_WELCOME_BONUS} TON/pessoa!
-🛠️ Publique suas próprias tarefas!""",
+                'tr': f"🚀 {BOT_NAME}\n\nHoş geldin {user['first_name']}! {stars}\n\n💎 Bakiye: {user['balance']:.4f} TON\n🎯 Görevler: {user['tasks_completed']}\n👥 Referans: {user['total_referrals']}\n📈 Kazanç: {user['total_earned']:.4f} TON\n\nMenüden devam edebilirsin.",
+                'en': f"🚀 {BOT_NAME}\n\nWelcome {user['first_name']}! {stars}\n\n💎 Balance: {user['balance']:.4f} TON\n🎯 Tasks: {user['tasks_completed']}\n👥 Referrals: {user['total_referrals']}\n📈 Earned: {user['total_earned']:.4f} TON\n\nUse the menu to continue.",
+                'pt_br': f"🚀 {BOT_NAME}\n\nBem-vindo {user['first_name']}! {stars}\n\n💎 Saldo: {user['balance']:.4f} TON\n🎯 Tarefas: {user['tasks_completed']}\n👥 Indicações: {user['total_referrals']}\n📈 Ganhos: {user['total_earned']:.4f} TON\n\nUse o menu para continuar.",
             }
             send_message(uid, msgs.get(lang, msgs['en']),
-                         reply_markup=self.main_kb(lang, str(uid) in ADMIN_IDS))
+                         reply_markup=self.main_kb(lang, str(uid) in ADMIN_IDS), parse_mode=None)
         except Exception as e:
             print(f"show_menu error uid={uid}: {e}")
             try:
-                send_message(uid, "🚀 *Taskiz'e Hoş Geldin!*\n\nLütfen tekrar /start yazın.")
+                send_message(uid, "Taskiz'e hoş geldin. Lütfen tekrar /start yaz.", parse_mode=None)
             except:
                 pass
 
@@ -1204,6 +1290,92 @@ class Bot:
                              [{'text': '💰 Bakiye',           'callback_data': 'show_balance'}],
                          ]})
 
+    def show_task_center(self, uid):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        lang = user['language']
+        texts = {
+            'tr': "🧭 *Görev Merkezi*\n\nNe yapmak istiyorsun?",
+            'en': "🧭 *Task Center*\n\nWhat do you want to do?",
+            'pt_br': "🧭 *Central de Tarefas*\n\nO que você quer fazer?",
+        }
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '📋 Kişisel Görevlerim', 'callback_data': 'task_center_personal'}],
+                [{'text': '🤖 Bot Görevlerim', 'callback_data': 'task_center_my_bot'}],
+                [{'text': '📢 Kanal Görevlerim', 'callback_data': 'task_center_my_channel'}],
+                [{'text': '👥 Grup Görevlerim', 'callback_data': 'task_center_my_group'}],
+                [{'text': '🏠 Menü', 'callback_data': 'main_menu'}],
+            ]
+        }
+        send_message(uid, texts.get(lang, texts['en']), reply_markup=keyboard)
+
+    def show_my_tasks_by_type(self, uid, task_type):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        lang = user['language']
+        labels = {
+            'tr': {'bot_start': '🤖 Bot Görevlerim', 'channel_join': '📢 Kanal Görevlerim', 'group_join': '👥 Grup Görevlerim'},
+            'en': {'bot_start': '🤖 My Bot Tasks', 'channel_join': '📢 My Channel Tasks', 'group_join': '👥 My Group Tasks'},
+            'pt_br': {'bot_start': '🤖 Minhas Tarefas de Bot', 'channel_join': '📢 Minhas Tarefas de Canal', 'group_join': '👥 Minhas Tarefas de Grupo'},
+        }
+        self.db.cur.execute(
+            "SELECT * FROM tasks WHERE created_by=? AND task_type=? AND status!='deleted' ORDER BY created_at DESC",
+            (uid, task_type)
+        )
+        tasks = [dict(r) for r in self.db.cur.fetchall()]
+
+        if not tasks:
+            no_text = {
+                'tr': "📭 Bu kategoride görevin yok.",
+                'en': "📭 No tasks in this category.",
+                'pt_br': "📭 Não há tarefas nesta categoria.",
+            }
+            send_message(uid, no_text.get(lang, no_text['en']), reply_markup={'inline_keyboard': [
+                [{'text': '🧭 Görev Merkezi', 'callback_data': 'task_center'}],
+                [{'text': '🏠 Menü', 'callback_data': 'main_menu'}],
+            ]})
+            return
+
+        header = f"{labels.get(lang, labels['en']).get(task_type, '📋 Görevlerim')} — {len(tasks)}\n"
+        icons = {'channel_join': '📢', 'group_join': '👥', 'bot_start': '🤖'}
+        st_ic = {'active': '🟢', 'inactive': '🔴', 'completed': '✅', 'deleted': '⛔'}
+        buttons = []
+        for t in tasks[:15]:
+            icon = icons.get(t['task_type'], '🎯')
+            si = st_ic.get(t['status'], '❓')
+            buttons.append([{
+                'text': f"{si}{icon} #{t['id']} {t['title']} ({t['current_participants']}/{t['max_participants']})",
+                'callback_data': f"mytask_{t['id']}"
+            }])
+        buttons.append([
+            {'text': '🧭 Görev Merkezi', 'callback_data': 'task_center'},
+            {'text': '🏠 Menü', 'callback_data': 'main_menu'},
+        ])
+        send_message(uid, header, reply_markup={'inline_keyboard': buttons})
+
+    def start_simple_task_creation(self, uid):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        self.states[uid] = {'action': 'task_create_name'}
+        send_message(uid, "🆕 Görev adı nedir?")
+
+    def show_personal_tasks(self, uid):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        tasks = self.db.get_personal_tasks(uid)
+        if not tasks:
+            send_message(uid, "📭 Henüz kişisel görevin yok.\n\n➕ Görev Oluştur ile hemen ekleyebilirsin.")
+            return
+        lines = ["📋 *Görevlerim*"]
+        for t in tasks[:20]:
+            lines.append(f"• #{t['id']} — *{t['title']}*\n  📝 {t['description']}\n  📅 Son: `{t['due_date']}`")
+        send_message(uid, "\n".join(lines))
+
     # ──────────────────────────────────────────
     #   GÖREV YAYINLA (HERKES)
     # ──────────────────────────────────────────
@@ -1219,7 +1391,7 @@ class Bot:
 Kendi kanalın/grubun/botun için görev yayınla.
 Kullanıcılar görevi tamamladıkça sen de büyürsün!
 
-💎 Bakiyen: `{user['balance']:.4f} TON`
+💎 Reklam bakiyen: `{user.get('ad_balance', 0):.4f} TON`
 
 *Görev Türleri:*
 📢 Kanal — Kullanıcı kanala katılır
@@ -1235,7 +1407,7 @@ Görev türünü seç:""",
 Publish a task for your channel/group/bot.
 Users complete it and your audience grows!
 
-💎 Balance: `{user['balance']:.4f} TON`
+💎 Ad balance: `{user.get('ad_balance', 0):.4f} TON`
 
 *Task Types:*
 📢 Channel — User joins your channel
@@ -1251,7 +1423,7 @@ Select task type:""",
 Publique uma tarefa para seu canal/grupo/bot.
 Usuários completam e sua audiência cresce!
 
-💎 Saldo: `{user['balance']:.4f} TON`
+💎 Saldo de anúncio: `{user.get('ad_balance', 0):.4f} TON`
 
 *Tipos de Tarefa:*
 📢 Canal — Usuário entra no seu canal
@@ -1415,11 +1587,11 @@ Selecione o tipo de tarefa:""",
         user = self.db.get_user(uid)
         if not user:
             return
-        if user['balance'] < budget:
+        if user.get('ad_balance', 0) < budget:
             need_msgs = {
-                'tr': f"❌ *Yetersiz Bakiye!*\n\n💎 Bakiyen: `{user['balance']:.4f} TON`\n💰 Gerekli: `{budget:.4f} TON`\n\nBakiye yüklemek için {SUPPORT_USERNAME} ile iletişime geçin.",
-                'en': f"❌ *Insufficient Balance!*\n\n💎 Balance: `{user['balance']:.4f} TON`\n💰 Required: `{budget:.4f} TON`\n\nContact {SUPPORT_USERNAME} to add balance.",
-                'pt_br': f"❌ *Saldo Insuficiente!*\n\n💎 Saldo: `{user['balance']:.4f} TON`\n💰 Necessário: `{budget:.4f} TON`\n\nContate {SUPPORT_USERNAME} para adicionar saldo.",
+                'tr': f"❌ *Yetersiz Bakiye!*\n\n💎 Reklam bakiyen: `{user.get('ad_balance', 0):.4f} TON`\n💰 Gerekli: `{budget:.4f} TON`\n\nBakiye yüklemek için {SUPPORT_USERNAME} ile iletişime geçin.",
+                'en': f"❌ *Insufficient Balance!*\n\n💎 Ad balance: `{user.get('ad_balance', 0):.4f} TON`\n💰 Required: `{budget:.4f} TON`\n\nContact {SUPPORT_USERNAME} to add balance.",
+                'pt_br': f"❌ *Saldo Insuficiente!*\n\n💎 Saldo de anúncio: `{user.get('ad_balance', 0):.4f} TON`\n💰 Necessário: `{budget:.4f} TON`\n\nContate {SUPPORT_USERNAME} para adicionar saldo.",
             }
             send_message(uid, need_msgs.get(lang, need_msgs['en']), reply_markup={'inline_keyboard': [
                 [{'text': f'📞 {SUPPORT_USERNAME}', 'url': f'https://t.me/{SUPPORT_USERNAME[1:]}'}],
@@ -1430,8 +1602,8 @@ Selecione o tipo de tarefa:""",
 
         state  = self.states.get(uid, {})
         tt     = state.get('task_type', 'channel_join')
-        reward = TASK_REWARDS.get(tt, 0.001)
-        max_p  = max(1, int(budget / reward))
+        reward = max(0.0001, TASK_REWARDS.get(tt, 0.001) / AD_PAYOUT_DIVISOR)
+        max_p  = max(1, int(budget / (reward * AD_PAYOUT_DIVISOR)))
         state['budget']  = budget
         state['max_p']   = max_p
         state['reward']  = reward
@@ -1459,9 +1631,10 @@ Selecione o tipo de tarefa:""",
 📌 Başlık:     *{state.get('title', '—')}*
 🏷️ Tür:        {tname}
 🎯 Hedef:      @{state.get('target_username', '—')}
-💎 Ödül/kişi: `{state.get('reward', 0):.4f} TON`
+💎 Kullanıcı ödülü/kişi: `{state.get('reward', 0):.4f} TON`
+💸 Reklam maliyeti katsayısı: `x{AD_PAYOUT_DIVISOR}`
 👥 Max:        `{state.get('max_p', 0)} kişi`
-💰 Toplam:     `{state.get('budget', 0):.4f} TON`{fwd_info}
+💰 Toplam reklam bütçesi: `{state.get('budget', 0):.4f} TON`{fwd_info}
 ━━━━━━━━━━━━━━━━
 Onaylıyor musun?""",
             'en': f"""✅ *TASK PREVIEW*
@@ -1469,9 +1642,10 @@ Onaylıyor musun?""",
 📌 Title:      *{state.get('title', '—')}*
 🏷️ Type:       {tname}
 🎯 Target:     @{state.get('target_username', '—')}
-💎 Reward:    `{state.get('reward', 0):.4f} TON`/user
+💎 User reward: `{state.get('reward', 0):.4f} TON`/user
+💸 Ad cost multiplier: `x{AD_PAYOUT_DIVISOR}`
 👥 Max:       `{state.get('max_p', 0)} users`
-💰 Total:     `{state.get('budget', 0):.4f} TON`{fwd_info}
+💰 Total ad budget: `{state.get('budget', 0):.4f} TON`{fwd_info}
 ━━━━━━━━━━━━━━━━
 Confirm?""",
             'pt_br': f"""✅ *PRÉVIA DA TAREFA*
@@ -1543,14 +1717,14 @@ Confirmar?""",
         budget = state.get('budget', 0)
         answer_callback(cb_id)
 
-        if user['balance'] < budget:
+        if user.get('ad_balance', 0) < budget:
             send_message(uid, T(lang, 'wd_low', min=budget, bal=f"{user['balance']:.4f}"))
             return
 
         # Bakiyeden düş
-        self.db.q('UPDATE users SET balance=balance-? WHERE user_id=?', (budget, uid))
+        self.db.q('UPDATE users SET ad_balance=ad_balance-? WHERE user_id=?', (budget, uid))
         self.db.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
-                  (uid, -budget, 'task_budget', state.get('title', '')))
+                  (uid, -budget, 'task_budget', state.get('title', '') + ' [ad_balance]'))
 
         tid = self.db.create_task(
             title           = state.get('title', 'Görev'),
@@ -1726,7 +1900,7 @@ Confirmar?""",
 📌 {task['title']}
 👥 Katılım: `{filled}/{total}`
 💵 Kalan bütçe: `{remain:.4f} TON`
-💎 Bakiyen: `{user['balance']:.4f} TON`
+💎 Reklam bakiyen: `{user.get('ad_balance', 0):.4f} TON`
 ━━━━━━━━━━━━━━━━
 Ne kadar eklemek istersin?""",
             'en': f"""💰 *ADD BUDGET — Task #{tid}*
@@ -1734,7 +1908,7 @@ Ne kadar eklemek istersin?""",
 📌 {task['title']}
 👥 Joined: `{filled}/{total}`
 💵 Remaining budget: `{remain:.4f} TON`
-💎 Your balance: `{user['balance']:.4f} TON`
+💎 Ad balance: `{user.get('ad_balance', 0):.4f} TON`
 ━━━━━━━━━━━━━━━━
 How much to add?""",
         }
@@ -1759,10 +1933,10 @@ How much to add?""",
         if cb_id:
             answer_callback(cb_id)
 
-        if user['balance'] < budget:
+        if user.get('ad_balance', 0) < budget:
             need_msgs = {
-                'tr': f"❌ *Yetersiz Bakiye!*\n\n💎 Bakiyen: `{user['balance']:.4f} TON`\n💰 Gerekli: `{budget:.4f} TON`\n\nBakiye eklemek için {SUPPORT_USERNAME} ile iletişime geçin.",
-                'en': f"❌ *Insufficient Balance!*\n\n💎 Balance: `{user['balance']:.4f} TON`\n💰 Required: `{budget:.4f} TON`\n\nContact {SUPPORT_USERNAME} to add balance.",
+                'tr': f"❌ *Yetersiz Bakiye!*\n\n💎 Reklam bakiyen: `{user.get('ad_balance', 0):.4f} TON`\n💰 Gerekli: `{budget:.4f} TON`\n\nBakiye eklemek için {SUPPORT_USERNAME} ile iletişime geçin.",
+                'en': f"❌ *Insufficient Balance!*\n\n💎 Ad balance: `{user.get('ad_balance', 0):.4f} TON`\n💰 Required: `{budget:.4f} TON`\n\nContact {SUPPORT_USERNAME} to add balance.",
             }
             send_message(uid, need_msgs.get(lang, need_msgs['en']), reply_markup={'inline_keyboard': [
                 [{'text': f'📞 {SUPPORT_USERNAME}', 'url': f'https://t.me/{SUPPORT_USERNAME[1:]}'}],
@@ -1774,7 +1948,7 @@ How much to add?""",
         add_max  = max(1, int(budget / reward))
 
         # Bakiyeden düş, max_participants artır, bütçe artır, görevi aktif yap
-        self.db.q('UPDATE users SET balance=balance-? WHERE user_id=?', (budget, uid))
+        self.db.q('UPDATE users SET ad_balance=ad_balance-? WHERE user_id=?', (budget, uid))
         self.db.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
                   (uid, -budget, 'task_extend', f'Görev #{tid} bütçe ekleme'))
         self.db.q('UPDATE tasks SET max_participants=max_participants+?, budget=budget+?, status="active" WHERE id=?',
@@ -1815,7 +1989,8 @@ How much to add?""",
         msgs = {
             'tr': f"""💰 *BAKİYE*
 ━━━━━━━━━━━━━━━━
-💎 Mevcut: `{user['balance']:.4f} TON`
+💎 Ana Bakiye: `{user['balance']:.4f} TON`
+📣 Reklam Bakiye: `{user.get('ad_balance', 0):.4f} TON`
 ━━━━━━━━━━━━━━━━
 📊 Kazanç:   `{user['total_earned']:.4f} TON`
 🎯 Görevler: `{user['tasks_completed']}`
@@ -1825,7 +2000,8 @@ How much to add?""",
 💳 Bakiye yüklemek için: {SUPPORT_USERNAME}""",
             'en': f"""💰 *BALANCE*
 ━━━━━━━━━━━━━━━━
-💎 Current: `{user['balance']:.4f} TON`
+💎 Main: `{user['balance']:.4f} TON`
+📣 Ad: `{user.get('ad_balance', 0):.4f} TON`
 ━━━━━━━━━━━━━━━━
 📊 Earned:  `{user['total_earned']:.4f} TON`
 🎯 Tasks:   `{user['tasks_completed']}`
@@ -1835,7 +2011,8 @@ How much to add?""",
 💳 To add balance contact: {SUPPORT_USERNAME}""",
             'pt_br': f"""💰 *SALDO*
 ━━━━━━━━━━━━━━━━
-💎 Atual: `{user['balance']:.4f} TON`
+💎 Principal: `{user['balance']:.4f} TON`
+📣 Anúncio: `{user.get('ad_balance', 0):.4f} TON`
 ━━━━━━━━━━━━━━━━
 📊 Ganhos:  `{user['total_earned']:.4f} TON`
 🎯 Tarefas: `{user['tasks_completed']}`
@@ -1851,6 +2028,7 @@ How much to add?""",
         send_message(uid, msgs.get(lang, msgs['en']), reply_markup={'inline_keyboard': [
             [{'text': lb[0], 'callback_data': 'show_withdraw'}, {'text': lb[1], 'callback_data': 'show_tasks'}],
             [{'text': lb[2], 'callback_data': 'show_invite'},   {'text': lb[3], 'callback_data': 'main_menu'}],
+            [{'text': '🔁 Ana → Reklam', 'callback_data': 'convert_to_ad'}, {'text': '🔁 Reklam → Ana', 'callback_data': 'convert_to_main'}],
             [{'text': f'💳 Bakiye Yükle — {SUPPORT_USERNAME}', 'url': f'https://t.me/{SUPPORT_USERNAME[1:]}'}],
         ]})
 
@@ -2356,12 +2534,49 @@ How much to add?""",
                              f"👤 *YENİ ÜYE*\n{user['first_name']} (`{uid}`)\nRef: {referred_by or '—'}")
             except:
                 pass
-            self.show_lang_select(uid)
+            if text.startswith('/start'):
+                self.show_menu(uid, 'tr')
+            else:
+                self.show_lang_select(uid)
             return
 
         self.db.update_active(uid)
         state  = self.states.get(uid, {})
         action = state.get('action', '')
+
+        # Basit kişisel görev oluşturma adımları
+        if action == 'task_create_name':
+            title = text.strip()
+            if len(title) < 2:
+                send_message(uid, "❌ Görev adı çok kısa. Lütfen tekrar yazın:")
+                return
+            self.states[uid] = {'action': 'task_create_desc', 'title': title}
+            send_message(uid, "📝 Görev açıklaması?")
+            return
+
+        if action == 'task_create_desc':
+            desc = text.strip()
+            if len(desc) < 2:
+                send_message(uid, "❌ Açıklama çok kısa. Lütfen tekrar yazın:")
+                return
+            self.states[uid] = {**self.states.get(uid, {}), 'action': 'task_create_deadline', 'description': desc}
+            send_message(uid, "📅 Son teslim tarihi? (GG.AA.YYYY)")
+            return
+
+        if action == 'task_create_deadline':
+            deadline_raw = text.strip()
+            try:
+                deadline_dt = datetime.strptime(deadline_raw, '%d.%m.%Y')
+            except ValueError:
+                send_message(uid, "❌ Tarih formatı hatalı. Örn: 31.12.2026")
+                return
+            state = self.states.get(uid, {})
+            task_id = self.db.create_personal_task(uid, state.get('title','Görev'), state.get('description',''), deadline_dt.strftime('%d.%m.%Y'))
+            if uid in self.states:
+                del self.states[uid]
+            send_message(uid, f"✅ Görev kaydedildi!\n\n🆔 #{task_id}\n📌 {state.get('title','Görev')}\n📅 Son tarih: {deadline_dt.strftime('%d.%m.%Y')}")
+            self.show_personal_tasks(uid)
+            return
 
         # Aktif görev oluşturma adımları
         if action.startswith('pub_'):
@@ -2437,12 +2652,36 @@ How much to add?""",
                              reply_markup={'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel'}]]})
             return
 
+        if action == 'convert_to_ad_amount':
+            try:
+                amt = float(text.replace(',', '.'))
+                if not self.db.convert_balance_to_ad(uid, amt):
+                    raise ValueError
+                del self.states[uid]
+                send_message(uid, f"✅ `{amt:.4f} TON` reklam bakiyesine aktarıldı.")
+                self.show_balance(uid)
+            except Exception:
+                send_message(uid, "❌ Geçersiz miktar veya yetersiz ana bakiye.")
+            return
+
+        if action == 'convert_to_main_amount':
+            try:
+                amt = float(text.replace(',', '.'))
+                if not self.db.convert_ad_to_balance(uid, amt):
+                    raise ValueError
+                del self.states[uid]
+                send_message(uid, f"✅ `{amt:.4f} TON` ana bakiyeye aktarıldı.")
+                self.show_balance(uid)
+            except Exception:
+                send_message(uid, "❌ Geçersiz miktar veya yetersiz reklam bakiyesi.")
+            return
+
         self.process_cmd(uid, text, user)
 
     def process_cmd(self, uid, text, user):
         lang = user['language']
 
-        if text == '/start':
+        if text.startswith('/start'):
             self.show_menu(uid, lang)
         elif text in ['/tasks']   + all_menu_labels('menu_tasks'):
             self.show_tasks(uid)
@@ -2453,9 +2692,9 @@ How much to add?""",
         elif text in ['/invite','/referral']+ all_menu_labels('menu_invite'):
             self.show_invite(uid)
         elif text in all_menu_labels('menu_tasks_create'):
-            self.show_task_publish(uid)
+            self.start_simple_task_creation(uid)
         elif text in all_menu_labels('menu_my_tasks'):
-            self.show_my_tasks(uid)
+            self.show_task_center(uid)
         elif text in ['/profile'] + all_menu_labels('menu_profile'):
             self.show_profile(uid)
         elif text in ['/settings']+ all_menu_labels('menu_settings'):
@@ -2702,6 +2941,50 @@ How much to add?""",
                 self.done_bot_task(uid, tid, cb_id)
                 return
 
+            if data == 'task_center':
+                answer_callback(cb_id)
+                self.show_task_center(uid)
+                return
+
+            if data == 'task_center_create_simple':
+                answer_callback(cb_id)
+                self.start_simple_task_creation(uid)
+                return
+
+            if data == 'task_center_personal':
+                answer_callback(cb_id)
+                self.show_personal_tasks(uid)
+                return
+
+            if data == 'task_center_my_bot':
+                answer_callback(cb_id)
+                self.show_my_tasks_by_type(uid, 'bot_start')
+                return
+
+            if data == 'task_center_my_channel':
+                answer_callback(cb_id)
+                self.show_my_tasks_by_type(uid, 'channel_join')
+                return
+
+            if data == 'task_center_my_group':
+                answer_callback(cb_id)
+                self.show_my_tasks_by_type(uid, 'group_join')
+                return
+
+            if data == 'convert_to_ad':
+                answer_callback(cb_id)
+                self.states[uid] = {'action': 'convert_to_ad_amount'}
+                send_message(uid, "🔁 Ana bakiyeden reklam bakiyesine aktarılacak miktarı gir (TON):",
+                             reply_markup={'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel'}]]})
+                return
+
+            if data == 'convert_to_main':
+                answer_callback(cb_id)
+                self.states[uid] = {'action': 'convert_to_main_amount'}
+                send_message(uid, "🔁 Reklam bakiyesinden ana bakiyeye aktarılacak miktarı gir (TON):",
+                             reply_markup={'inline_keyboard': [[{'text': '❌ İptal', 'callback_data': 'cancel'}]]})
+                return
+
             # Diğer
             routes = {
                 'main_menu':      lambda: self.show_menu(uid, lang),
@@ -2745,7 +3028,15 @@ How much to add?""",
 #              POLLING & WEB
 # ════════════════════════════════════════════
 def run_polling():
-    bot    = Bot()
+    bot = None
+    while bot is None:
+        try:
+            bot = Bot()
+        except Exception as e:
+            print(f"Bot başlatma hatası: {e}")
+            print("5 saniye sonra tekrar denenecek...")
+            time.sleep(5)
+
     offset = None
     print("🔄 Polling başlatıldı...")
     while True:
