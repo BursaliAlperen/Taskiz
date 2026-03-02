@@ -62,3 +62,16 @@ ref = db.reference("/")
 
 ### 7) Sonraki Adım (Daha da Gelişmiş)
 SQLite verilerini Firestore’a taşımak için otomatik bir taşıma scripti ekleyebiliriz. Ayrıca güvenlik kuralları ve gerçek zamanlı güncellemeler için ayrıntılı bir yapı kurabiliriz.
+
+
+## Bot Akışı (Güncel)
+- `/start` komutu yeni ve mevcut kullanıcıda çalışır, doğrudan menüyü açar.
+- Menüde temel butonlar: `➕ Görev Oluştur`, `📋 Görevlerim`, `❓ Yardım`.
+- `Görev Oluştur` akışı:
+  1. Görev adı
+  2. Görev açıklaması
+  3. Son teslim tarihi (`GG.AA.YYYY`)
+  4. Firebase + SQLite'a kayıt ve onay mesajı.
+
+## Firestore Rules
+Örnek güvenlik kuralı dosyası: `firestore.rules`
