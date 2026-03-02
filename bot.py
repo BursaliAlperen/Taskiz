@@ -35,7 +35,8 @@ if not TOKEN:
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "")
-FIREBASE_PROJECT_ID       = os.environ.get("FIREBASE_PROJECT_ID", "")
+FIREBASE_PROJECT_ID       = os.environ.get("FIREBASE_PROJECT_ID", "taskiz-2db5a")
+FIREBASE_DATABASE_URL     = os.environ.get("FIREBASE_DATABASE_URL", "https://taskiz-2db5a-default-rtdb.firebaseio.com/")
 
 # ════════════════════════════════════════════
 #              DİL DESTEĞİ
@@ -149,38 +150,210 @@ def get_updates(offset=None, timeout=30):
 #              FIREBASE
 # ════════════════════════════════════════════
 class FirebaseClient:
+    """
+    Firebase = Birincil kalici depolama.
+    SQLite  = Hizli okuma icin yerel onbellek.
+    Her deploy sonrasi SQLite sifirlanir ama Firebase kalicidir.
+    """
     def __init__(self):
         self.enabled = False
-        self.db = None
-        if not FIREBASE_CREDENTIALS_JSON or not FIREBASE_PROJECT_ID:
+        self.fs   = None
+        self._queue  = []
+        self._qlock  = threading.Lock()
+
+        # FIREBASE_DATABASE_URL is module-level env var
+        cred_json = FIREBASE_CREDENTIALS_JSON or ''
+        project   = FIREBASE_PROJECT_ID or ''
+
+        if not cred_json or not project:
+            print('WARNING Firebase env vars eksik -- sadece SQLite kullanilacak')
             return
         try:
-            cred = credentials.Certificate(json.loads(FIREBASE_CREDENTIALS_JSON))
+            cred = credentials.Certificate(json.loads(cred_json))
             if not firebase_admin._apps:
-                firebase_admin.initialize_app(cred, {"projectId": FIREBASE_PROJECT_ID})
-            self.db = firestore.client()
+                opts = {'projectId': project}
+                if FIREBASE_DATABASE_URL:  # noqa
+                    opts['databaseURL'] = FIREBASE_DATABASE_URL
+                firebase_admin.initialize_app(cred, opts)
+            self.fs = firestore.client()
             self.enabled = True
-            print("✅ Firebase bağlandı")
+            print('Firebase baglandi (Firestore)')
+            t = threading.Thread(target=self._flush_loop, daemon=True)
+            t.start()
         except Exception as e:
-            print(f"Firebase: {e}")
+            print(f'Firebase baglanti hatasi: {e}')
 
-    def upsert(self, col, doc_id, data):
-        if self.enabled:
+    def _flush_loop(self):
+        while True:
+            time.sleep(3)
+            with self._qlock:
+                items = self._queue[:]
+                self._queue.clear()
+            for col, doc_id, data in items:
+                try:
+                    self.fs.collection(col).document(str(doc_id)).set(data, merge=True)
+                except Exception as e:
+                    print(f'Firebase flush [{col}/{doc_id}]: {e}')
+
+    def save(self, col, doc_id, data):
+        if not self.enabled:
+            return
+        with self._qlock:
+            for i, (c, d, _) in enumerate(self._queue):
+                if c == col and d == str(doc_id):
+                    self._queue[i] = (col, str(doc_id), data)
+                    return
+            self._queue.append((col, str(doc_id), data))
+
+    def save_now(self, col, doc_id, data):
+        if not self.enabled:
+            return
+        try:
+            self.fs.collection(col).document(str(doc_id)).set(data, merge=True)
+        except Exception as e:
+            print(f'Firebase save_now [{col}]: {e}')
+
+    def load_collection(self, col):
+        if not self.enabled:
+            return []
+        try:
+            docs = self.fs.collection(col).stream()
+            return [(doc.id, doc.to_dict()) for doc in docs]
+        except Exception as e:
+            print(f'Firebase load [{col}]: {e}')
+            return []
+
+    def restore_to_sqlite(self, db_obj):
+        if not self.enabled:
+            print('Firebase devre disi -- veriler sifirdan basliyor')
+            return
+        print('Firebase den veriler yukleniyor...')
+        conn = db_obj.conn
+
+        users = self.load_collection('users')
+        for doc_id, u in users:
             try:
-                self.db.collection(col).document(str(doc_id)).set(data, merge=True)
+                conn.execute(
+                    'INSERT OR REPLACE INTO users '
+                    '(user_id,username,first_name,last_name,language,balance,'
+                    'referral_code,referred_by,tasks_completed,total_earned,'
+                    'total_referrals,ton_address,created_at,last_active,status)'
+                    ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (
+                        int(u.get('user_id', 0) or doc_id),
+                        u.get('username',''), u.get('first_name',''), u.get('last_name',''),
+                        u.get('language','tr'), float(u.get('balance',0)),
+                        u.get('referral_code',''), u.get('referred_by'),
+                        int(u.get('tasks_completed',0)), float(u.get('total_earned',0)),
+                        int(u.get('total_referrals',0)), u.get('ton_address',''),
+                        u.get('created_at',''), u.get('last_active',''),
+                        u.get('status','active'),
+                    )
+                )
+            except Exception as e:
+                print(f'User restore [{doc_id}]: {e}')
+        print(f'  {len(users)} kullanici yuklendi')
+
+        tasks = self.load_collection('tasks')
+        for doc_id, t in tasks:
+            try:
+                tid = t.get('id') or doc_id
+                if not str(tid).lstrip('-').isdigit():
+                    tid = 0
+                conn.execute(
+                    'INSERT OR REPLACE INTO tasks '
+                    '(id,title,description,reward,max_participants,current_participants,'
+                    'status,task_type,target_username,target_link,fwd_chat_id,'
+                    'fwd_message_id,created_by,budget,created_at)'
+                    ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (
+                        int(tid), t.get('title',''), t.get('description',''),
+                        float(t.get('reward',0)), int(t.get('max_participants',100)),
+                        int(t.get('current_participants',0)), t.get('status','active'),
+                        t.get('task_type','channel_join'), t.get('target_username',''),
+                        t.get('target_link',''), t.get('fwd_chat_id',''),
+                        int(t.get('fwd_message_id',0)), int(t.get('created_by',0) or 0),
+                        float(t.get('budget',0)), t.get('created_at',''),
+                    )
+                )
+            except Exception as e:
+                print(f'Task restore [{doc_id}]: {e}')
+        print(f'  {len(tasks)} gorev yuklendi')
+
+        comps = self.load_collection('task_completions')
+        for doc_id, c in comps:
+            try:
+                conn.execute(
+                    'INSERT OR IGNORE INTO task_completions(task_id,user_id,created_at) VALUES(?,?,?)',
+                    (int(c.get('task_id',0)), int(c.get('user_id',0)), c.get('created_at',''))
+                )
             except:
                 pass
+        print(f'  {len(comps)} tamamlama yuklendi')
+
+        wds = self.load_collection('withdrawals')
+        for doc_id, w in wds:
+            try:
+                wid = w.get('id') or 0
+                if not str(wid).lstrip('-').isdigit():
+                    wid = 0
+                conn.execute(
+                    'INSERT OR REPLACE INTO withdrawals '
+                    '(id,user_id,amount,ton_address,status,tx_hash,admin_note,created_at)'
+                    ' VALUES(?,?,?,?,?,?,?,?)',
+                    (
+                        int(wid), int(w.get('user_id',0)),
+                        float(w.get('amount',0)), w.get('ton_address',''),
+                        w.get('status','pending'), w.get('tx_hash',''),
+                        w.get('admin_note',''), w.get('created_at',''),
+                    )
+                )
+            except Exception as e:
+                print(f'WD restore [{doc_id}]: {e}')
+        print(f'  {len(wds)} cekim yuklendi')
+
+        refs = self.load_collection('referrals')
+        for doc_id, r in refs:
+            try:
+                conn.execute(
+                    'INSERT OR IGNORE INTO referrals(referrer_id,referred_id,earned,status,created_at) VALUES(?,?,?,?,?)',
+                    (int(r.get('referrer_id',0)), int(r.get('referred_id',0)),
+                     float(r.get('earned',0)), r.get('status','pending'), r.get('created_at',''))
+                )
+            except:
+                pass
+        print(f'  {len(refs)} referans yuklendi')
+
+        pens = self.load_collection('channel_leave_penalties')
+        for doc_id, p in pens:
+            try:
+                conn.execute(
+                    'INSERT OR IGNORE INTO channel_leave_penalties(user_id,task_id,amount,reason,created_at) VALUES(?,?,?,?,?)',
+                    (int(p.get('user_id',0)), int(p.get('task_id',0)),
+                     float(p.get('amount',0)), p.get('reason',''), p.get('created_at',''))
+                )
+            except:
+                pass
+        print(f'  {len(pens)} ceza kaydi yuklendi')
+
+        conn.commit()
+        print('Firebase restore tamamlandi!')
+
 
 # ════════════════════════════════════════════
 #              VERİTABANI
 # ════════════════════════════════════════════
 class DB:
-    def __init__(self, path='taskiz.db'):
+    def __init__(self, path='taskiz.db', firebase=None):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.cur = self.conn.cursor()
         self._lock = threading.Lock()
+        self.fb = firebase  # FirebaseClient referansı
         self._setup()
+        # Deploy sonrası Firebase'den verileri geri yükle
+        if self.fb:
+            self.fb.restore_to_sqlite(self)
         print("✅ Veritabanı hazır")
 
     def q(self, sql, p=()):
@@ -309,7 +482,15 @@ class DB:
         if referred_by:
             self.q('INSERT OR IGNORE INTO referrals(referrer_id,referred_id,status) VALUES(?,?,"pending")',
                    (referred_by, uid))
-        return self.get_user(uid)
+        u = self.get_user(uid)
+        if self.fb and u:
+            self.fb.save('users', str(uid), dict(u))
+            if referred_by:
+                self.cur.execute('SELECT * FROM referrals WHERE referred_id=?', (uid,))
+                rrow = self.cur.fetchone()
+                if rrow:
+                    self.fb.save('referrals', str(uid), dict(rrow))
+        return u
 
     def activate_referral(self, referred_id):
         self.cur.execute('SELECT * FROM referrals WHERE referred_id=? AND status="pending"', (referred_id,))
@@ -324,6 +505,14 @@ class DB:
                (REF_WELCOME_BONUS, referred_id))
         self.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
                (rid, REF_WELCOME_BONUS, 'ref_bonus', f'Ref: {referred_id}'))
+        if self.fb:
+            u = self.get_user(rid)
+            if u:
+                self.fb.save('users', str(rid), dict(u))
+            self.cur.execute('SELECT * FROM referrals WHERE referred_id=?', (referred_id,))
+            rrow = self.cur.fetchone()
+            if rrow:
+                self.fb.save('referrals', str(referred_id), dict(rrow))
         return rid
 
     def update_active(self, uid):
@@ -331,9 +520,15 @@ class DB:
 
     def set_lang(self, uid, lang):
         self.q('UPDATE users SET language=? WHERE user_id=?', (lang, uid))
+        if self.fb:
+            u = self.get_user(uid)
+            if u: self.fb.save('users', str(uid), dict(u))
 
     def set_ton(self, uid, addr):
         self.q('UPDATE users SET ton_address=? WHERE user_id=?', (addr, uid))
+        if self.fb:
+            u = self.get_user(uid)
+            if u: self.fb.save('users', str(uid), dict(u))
 
     # ── GÖREVLER ─────────────────────────────
     def create_task(self, title, description, reward, max_p, task_type,
@@ -345,7 +540,11 @@ class DB:
                (title, description, reward, max_p, task_type,
                 target_username, target_link, str(fwd_chat_id), fwd_message_id,
                 created_by, budget))
-        return self.cur.lastrowid
+        tid = self.cur.lastrowid
+        if self.fb:
+            task = self.get_task(tid)
+            if task: self.fb.save_now('tasks', str(tid), dict(task))
+        return tid
 
     def get_task(self, tid):
         self.cur.execute('SELECT * FROM tasks WHERE id=?', (tid,))
@@ -398,6 +597,18 @@ class DB:
             self.q('UPDATE users SET balance=balance+? WHERE user_id=?', (commission, user['referred_by']))
             self.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
                    (user['referred_by'], commission, 'ref_commission', f'Görev komisyon: {uid}'))
+            if self.fb:
+                ref_u = self.get_user(user['referred_by'])
+                if ref_u: self.fb.save('users', str(user['referred_by']), dict(ref_u))
+        # Firebase sync — kullanici + gorev + tamamlama
+        if self.fb:
+            fresh = self.get_user(uid)
+            if fresh: self.fb.save('users', str(uid), dict(fresh))
+            task_fresh = self.get_task(tid)
+            if task_fresh: self.fb.save('tasks', str(tid), dict(task_fresh))
+            now = datetime.now().isoformat()
+            comp_key = f'{uid}_{tid}'
+            self.fb.save('task_completions', comp_key, {'task_id': tid, 'user_id': uid, 'created_at': now})
         return reward
 
     def toggle_task(self, tid):
@@ -419,6 +630,12 @@ class DB:
         self.q('UPDATE users SET balance=balance-? WHERE user_id=?', (amount, uid))
         self.q('INSERT INTO txns(user_id,amount,type,note) VALUES(?,?,?,?)',
                (uid, -amount, 'withdrawal', addr[:20]))
+        if self.fb:
+            u = self.get_user(uid)
+            if u: self.fb.save('users', str(uid), dict(u))
+            self.cur.execute('SELECT * FROM withdrawals WHERE id=?', (wid,))
+            wd = self.cur.fetchone()
+            if wd: self.fb.save_now('withdrawals', str(wid), dict(wd))
         return wid
 
     def approve_wd(self, wid, admin_id, tx_hash=''):
@@ -426,6 +643,10 @@ class DB:
                (tx_hash, wid))
         self.q('INSERT INTO admin_logs(admin_id,action,target_id,details) VALUES(?,?,?,?)',
                (admin_id, 'approve_wd', wid, tx_hash))
+        if self.fb:
+            self.cur.execute('SELECT * FROM withdrawals WHERE id=?', (wid,))
+            wd = self.cur.fetchone()
+            if wd: self.fb.save('withdrawals', str(wid), dict(wd))
 
     def reject_wd(self, wid, admin_id, reason=''):
         self.cur.execute('SELECT * FROM withdrawals WHERE id=?', (wid,))
@@ -450,15 +671,24 @@ class DB:
                (uid, amount, 'admin_add', reason or 'Admin'))
         self.q('INSERT INTO admin_logs(admin_id,action,target_id,details) VALUES(?,?,?,?)',
                (admin_id, 'add_balance', uid, f'{amount} TON | {reason}'))
+        if self.fb:
+            u = self.get_user(uid)
+            if u: self.fb.save('users', str(uid), dict(u))
 
     def remove_balance(self, uid, amount, admin_id):
         self.q('UPDATE users SET balance=MAX(0,balance-?) WHERE user_id=?', (amount, uid))
 
     def ban(self, uid):
         self.q("UPDATE users SET status='banned' WHERE user_id=?", (uid,))
+        if self.fb:
+            u = self.get_user(uid)
+            if u: self.fb.save('users', str(uid), dict(u))
 
     def unban(self, uid):
         self.q("UPDATE users SET status='active' WHERE user_id=?", (uid,))
+        if self.fb:
+            u = self.get_user(uid)
+            if u: self.fb.save('users', str(uid), dict(u))
 
     def search_user(self, term):
         try:
@@ -628,8 +858,9 @@ def all_menu_labels(key):
 # ════════════════════════════════════════════
 class Bot:
     def __init__(self):
-        self.db       = DB()
-        self.firebase = FirebaseClient()
+        fb            = FirebaseClient()
+        self.db       = DB(firebase=fb)
+        self.firebase = fb
         self.states   = {}   # user_id → dict
         print(f"🤖 {BOT_NAME} hazır!")
 
