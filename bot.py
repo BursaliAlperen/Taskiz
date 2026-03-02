@@ -25,7 +25,10 @@ BOT_NAME         = os.environ.get("BOT_NAME", "TaskizBot")
 #         ZORUNLU KANALLAR / GRUPLAR
 # ════════════════════════════════════════════
 MANDATORY_CHANNELS = [
-    {'username': 'TaskizLive', 'link': 'https://t.me/TaskizLive', 'name': 'TaskizLive', 'emoji': '📊'},
+    {'username': 'TaskizLive',           'link': 'https://t.me/TaskizLive',           'name': 'TaskizLive',           'emoji': '📊'},
+    {'username': 'TonCryptoNewsAirdrop', 'link': 'https://t.me/TonCryptoNewsAirdrop', 'name': 'TON Crypto News',      'emoji': '💎'},
+    {'username': 'AliceCryptoChannel',   'link': 'https://t.me/AliceCryptoChannel',   'name': 'Alice Crypto',         'emoji': '🪙'},
+    {'username': 'TaskizCommunity',      'link': 'https://t.me/TaskizCommunity',      'name': 'Taskiz Community',     'emoji': '👥'},
 ]
 MANDATORY_GROUPS = []
 
@@ -113,28 +116,24 @@ def answer_callback(cb_id, text=None, alert=False):
 def get_chat_member(chat_id, user_id):
     """
     Üyelik kontrolü.
-    Bot kanalda ADMIN olmalı — yoksa True döner (engelleme yok).
+    Herhangi bir hata/timeout → True döner (engelleme yok).
     """
-    for _ in range(3):
-        try:
-            r = requests.post(BASE_URL + "getChatMember",
-                              json={"chat_id": chat_id, "user_id": user_id},
-                              timeout=10)
-            data = r.json()
-            if data.get("ok"):
-                return data["result"]["status"] in ["member", "administrator", "creator", "restricted"]
+    try:
+        r = requests.post(BASE_URL + "getChatMember",
+                          json={"chat_id": chat_id, "user_id": user_id},
+                          timeout=8)
+        data = r.json()
+        if not data.get("ok"):
             err = data.get("description", "").lower()
             print(f"getChatMember [{chat_id}] → {err}")
-            if any(x in err for x in ["chat not found", "bot is not a member", "bot was kicked",
-                                        "not enough rights", "have no rights"]):
-                return True  # Bot admin değil → engelleme yapma
-            return False
-        except requests.exceptions.Timeout:
-            time.sleep(0.5)
-        except Exception as e:
-            print(f"getChatMember exc: {e}")
-            time.sleep(0.5)
-    return True
+            # Bot kanalda değil veya yetki yok → engelleme yapma
+            return True
+        status = data["result"]["status"]
+        # left veya kicked → üye değil
+        return status not in ("left", "kicked")
+    except Exception as e:
+        print(f"getChatMember exc [{chat_id}]: {e}")
+        return True  # Hata durumunda her zaman geçir
 
 def get_updates(offset=None, timeout=30):
     params = {'timeout': timeout}
@@ -874,11 +873,22 @@ class Bot:
     #   KANAL KONTROLÜ
     # ──────────────────────────────────────────
     def missing_channels(self, uid):
-        return [ch for ch in MANDATORY_CHANNELS + MANDATORY_GROUPS
-                if not get_chat_member(f"@{ch['username']}", uid)]
+        missing = []
+        for ch in MANDATORY_CHANNELS + MANDATORY_GROUPS:
+            try:
+                if not get_chat_member(f"@{ch['username']}", uid):
+                    missing.append(ch)
+            except Exception as e:
+                print(f"missing_channels check error [{ch['username']}]: {e}")
+                # Hata durumunda bu kanalı zorunlu sayma
+        return missing
 
     def enforce_channels(self, uid, lang):
-        missing = self.missing_channels(uid)
+        try:
+            missing = self.missing_channels(uid)
+        except Exception as e:
+            print(f"enforce_channels error: {e}")
+            return True  # Hata varsa geç, menüyü göster
         if not missing:
             return True
         all_req = MANDATORY_CHANNELS + MANDATORY_GROUPS
@@ -886,13 +896,16 @@ class Bot:
         lines   = [f"✅ {c['emoji']} {c['name']}" for c in joined] + \
                   [f"❌ {c['emoji']} {c['name']}" for c in missing]
         texts   = {
-            'tr':    "⚠️ *ZORUNLU ÜYELİK*\n\n" + '\n'.join(lines) + "\n\n👇 Kanala katıl, sonra *Kontrol Et* butonuna bas.",
-            'en':    "⚠️ *MANDATORY MEMBERSHIP*\n\n" + '\n'.join(lines) + "\n\n👇 Join the channel then press *Check*.",
-            'pt_br': "⚠️ *PARTICIPAÇÃO OBRIGATÓRIA*\n\n" + '\n'.join(lines) + "\n\n👇 Entre no canal e pressione *Verificar*.",
+            'tr':    "⚠️ *ZORUNLU ÜYELİK*\n\n" + '\n'.join(lines) + "\n\n👇 Kanallara katıl, sonra *Kontrol Et* butonuna bas.",
+            'en':    "⚠️ *MANDATORY MEMBERSHIP*\n\n" + '\n'.join(lines) + "\n\n👇 Join the channels then press *Check*.",
+            'pt_br': "⚠️ *PARTICIPAÇÃO OBRIGATÓRIA*\n\n" + '\n'.join(lines) + "\n\n👇 Entre nos canais e pressione *Verificar*.",
         }
         buttons = [[{'text': f"👉 {c['emoji']} {c['name']}", 'url': c['link']}] for c in missing]
         buttons.append([{'text': T(lang, 'check_btn'), 'callback_data': 'check_channels'}])
-        send_message(uid, texts.get(lang, texts['en']), reply_markup={'inline_keyboard': buttons})
+        try:
+            send_message(uid, texts.get(lang, texts['en']), reply_markup={'inline_keyboard': buttons})
+        except Exception as e:
+            print(f"enforce_channels send error: {e}")
         return False
 
     # ──────────────────────────────────────────
@@ -926,16 +939,17 @@ class Bot:
     #   ANA MENÜ
     # ──────────────────────────────────────────
     def show_menu(self, uid, lang=None):
-        user = self.db.get_user(uid)
-        if not user:
-            return
-        if not lang:
-            lang = user['language']
-        if not self.enforce_channels(uid, lang):
-            return
-        stars = '⭐' * min(5, max(1, int(user['total_referrals'] / 5) + 1))
-        msgs  = {
-            'tr': f"""╔══════════════════════╗
+        try:
+            user = self.db.get_user(uid)
+            if not user:
+                return
+            if not lang:
+                lang = user['language']
+            if not self.enforce_channels(uid, lang):
+                return
+            stars = '⭐' * min(5, max(1, int(user['total_referrals'] / 5) + 1))
+            msgs  = {
+                'tr': f"""╔══════════════════════╗
 ║   🚀  *{BOT_NAME}*   ║
 ╚══════════════════════╝
 👋 Hoş geldin, *{user['first_name']}*! {stars}
@@ -948,7 +962,7 @@ class Bot:
 💡 Görev tamamla → TON kazan!
 🔗 Davet et → +{REF_WELCOME_BONUS} TON/kişi!
 🛠️ Kendi görevini yayınla!""",
-            'en': f"""╔══════════════════════╗
+                'en': f"""╔══════════════════════╗
 ║   🚀  *{BOT_NAME}*   ║
 ╚══════════════════════╝
 👋 Welcome, *{user['first_name']}*! {stars}
@@ -961,7 +975,7 @@ class Bot:
 💡 Complete tasks → Earn TON!
 🔗 Invite → +{REF_WELCOME_BONUS} TON/person!
 🛠️ Publish your own tasks!""",
-            'pt_br': f"""╔══════════════════════╗
+                'pt_br': f"""╔══════════════════════╗
 ║   🚀  *{BOT_NAME}*   ║
 ╚══════════════════════╝
 👋 Bem-vindo, *{user['first_name']}*! {stars}
@@ -974,9 +988,15 @@ class Bot:
 💡 Conclua tarefas → Ganhe TON!
 🔗 Convide → +{REF_WELCOME_BONUS} TON/pessoa!
 🛠️ Publique suas próprias tarefas!""",
-        }
-        send_message(uid, msgs.get(lang, msgs['en']),
-                     reply_markup=self.main_kb(lang, str(uid) in ADMIN_IDS))
+            }
+            send_message(uid, msgs.get(lang, msgs['en']),
+                         reply_markup=self.main_kb(lang, str(uid) in ADMIN_IDS))
+        except Exception as e:
+            print(f"show_menu error uid={uid}: {e}")
+            try:
+                send_message(uid, "🚀 *Taskiz'e Hoş Geldin!*\n\nLütfen tekrar /start yazın.")
+            except:
+                pass
 
     # ──────────────────────────────────────────
     #   GÖREVLER
