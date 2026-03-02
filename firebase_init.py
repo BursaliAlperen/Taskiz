@@ -1,23 +1,21 @@
-# firebase_init.py
 import firebase_admin
 from firebase_admin import credentials, firestore, db as realtime_db
-import json
 from datetime import datetime
 
-# Firebase bağlantısı
+# Firebase bağlantısı (kalıcı ana veri kaynağı)
 cred = credentials.Certificate("taskiz-2db5a-firebase-adminsdk-fbsvc-98e0792e57.json")
 firebase_admin.initialize_app(cred, {
     'projectId': 'taskiz-2db5a',
     'databaseURL': 'https://taskiz-2db5a-default-rtdb.firebaseio.com/'
 })
 
-db = firestore.client()
+fs = firestore.client()
 rtdb = realtime_db.reference()
 
+
 def init_database():
-    """Veritabanını başlat"""
-    
-    # 📊 Başlangıç görevleri
+    """Firestore + Realtime başlangıç verisini tek seferde oluşturur."""
+
     sample_tasks = [
         {
             "type": "kanal",
@@ -53,14 +51,11 @@ def init_database():
             "creator_id": "admin"
         }
     ]
-    
+
     for task in sample_tasks:
-        db.collection("tasks").add(task)
-        # Realtime'a da ekle
-        task_id = db.collection("tasks").add(task)[1].id
-        rtdb.child("tasks").child(task_id).set(task)
-    
-    # 📈 İstatistikleri sıfırla
+        doc_ref = fs.collection("tasks").add(task)[1]
+        rtdb.child("tasks").child(doc_ref.id).set(task)
+
     rtdb.child("stats").set({
         "total_users": 0,
         "total_tasks": len(sample_tasks),
@@ -69,10 +64,11 @@ def init_database():
         "total_deposits": 0,
         "last_updated": datetime.now().isoformat()
     })
-    
+
     print("✅ Veritabanı başlatıldı!")
     print(f"📊 {len(sample_tasks)} örnek görev eklendi")
     print("🎯 Bot hazır!")
+
 
 if __name__ == "__main__":
     init_database()

@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Kullanıcı kendi profilini okuyup güncelleyebilir
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn() && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    // Bot tarafından yönetilen koleksiyonlar (istemci erişimi kapalı)
+    match /tasks/{docId} { allow read, write: if false; }
+    match /task_completions/{docId} { allow read, write: if false; }
+    match /withdrawals/{docId} { allow read, write: if false; }
+    match /referrals/{docId} { allow read, write: if false; }
+    match /personal_tasks/{docId} { allow read, write: if false; }
+
+    // Varsayılan: kapalı
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
