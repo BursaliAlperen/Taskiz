@@ -338,6 +338,18 @@ class FirebaseClient:
                 pass
         print(f'  {len(pens)} ceza kaydi yuklendi')
 
+        personal = self.load_collection('personal_tasks')
+        for doc_id, t in personal:
+            try:
+                conn.execute(
+                    'INSERT OR REPLACE INTO personal_tasks(id,user_id,title,description,due_date,status,created_at) VALUES(?,?,?,?,?,?,?)',
+                    (int(t.get('id', doc_id)), int(t.get('user_id', 0)), t.get('title', ''),
+                     t.get('description', ''), t.get('due_date', ''), t.get('status', 'active'), t.get('created_at', ''))
+                )
+            except Exception:
+                pass
+        print(f'  {len(personal)} kisisel gorev yuklendi')
+
         conn.commit()
         print('Firebase restore tamamlandi!')
 
@@ -461,6 +473,16 @@ class DB:
                 reason     TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS personal_tasks (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER,
+                title      TEXT,
+                description TEXT DEFAULT '',
+                due_date   TEXT DEFAULT '',
+                status     TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         ''')
         self.conn.commit()
 
@@ -569,6 +591,20 @@ class DB:
     def get_all_tasks(self):
         self.cur.execute("SELECT * FROM tasks WHERE status!='deleted' ORDER BY created_at DESC")
         return [dict(r) for r in self.cur.fetchall()]
+
+    def create_personal_task(self, uid, title, description, due_date):
+        self.q('INSERT INTO personal_tasks(user_id,title,description,due_date,status) VALUES(?,?,?,?,"active")',
+               (uid, title, description, due_date))
+        task_id = self.cur.lastrowid
+        if self.fb:
+            row = self.cur.execute('SELECT * FROM personal_tasks WHERE id=?', (task_id,)).fetchone()
+            if row:
+                self.fb.save_now('personal_tasks', str(task_id), dict(row))
+        return task_id
+
+    def get_personal_tasks(self, uid):
+        self.cur.execute('SELECT * FROM personal_tasks WHERE user_id=? ORDER BY created_at DESC', (uid,))
+        return [dict(x) for x in self.cur.fetchall()]
 
     def has_done(self, uid, tid):
         self.cur.execute('SELECT 1 FROM task_completions WHERE user_id=? AND task_id=?', (uid, tid))
@@ -769,7 +805,7 @@ _T = {
         'menu_invite':  '👥 Davet',
         'menu_withdraw':'💎 Çekim',
         'menu_profile': '👤 Profil',
-        'menu_tasks_create':'🛠️ Görev Yayınla',
+        'menu_tasks_create':'➕ Görev Oluştur',
         'menu_my_tasks': '📋 Görevlerim',
         'menu_help':    '❓ Yardım',
         'menu_settings':'⚙️ Ayarlar',
@@ -795,7 +831,7 @@ _T = {
         'menu_invite':  '👥 Invite',
         'menu_withdraw':'💎 Withdraw',
         'menu_profile': '👤 Profile',
-        'menu_tasks_create':'🛠️ Publish Task',
+        'menu_tasks_create':'➕ Create Task',
         'menu_my_tasks': '📋 My Tasks',
         'menu_help':    '❓ Help',
         'menu_settings':'⚙️ Settings',
@@ -821,7 +857,7 @@ _T = {
         'menu_invite':  '👥 Convidar',
         'menu_withdraw':'💎 Sacar',
         'menu_profile': '👤 Perfil',
-        'menu_tasks_create':'🛠️ Publicar Tarefa',
+        'menu_tasks_create':'➕ Criar Tarefa',
         'menu_my_tasks': '📋 Minhas Tarefas',
         'menu_help':    '❓ Ajuda',
         'menu_settings':'⚙️ Ajustes',
@@ -913,11 +949,10 @@ class Bot:
     # ──────────────────────────────────────────
     def main_kb(self, lang, is_admin=False):
         rows = [
-            [T(lang,'menu_balance'),       T(lang,'menu_tasks')],
-            [T(lang,'menu_withdraw'),      T(lang,'menu_invite')],
-            [T(lang,'menu_tasks_create'),  T(lang,'menu_my_tasks')],
-            [T(lang,'menu_profile'),       T(lang,'menu_settings')],
-            [T(lang,'menu_help')],
+            [T(lang,'menu_tasks_create'), T(lang,'menu_my_tasks'), T(lang,'menu_help')],
+            [T(lang,'menu_tasks'),        T(lang,'menu_balance')],
+            [T(lang,'menu_withdraw'),     T(lang,'menu_invite')],
+            [T(lang,'menu_profile'),      T(lang,'menu_settings')],
         ]
         if is_admin:
             rows.append([T(lang,'menu_admin')])
@@ -1203,6 +1238,93 @@ class Bot:
                              [{'text': '🎯 Daha Fazla Görev', 'callback_data': 'show_tasks'}],
                              [{'text': '💰 Bakiye',           'callback_data': 'show_balance'}],
                          ]})
+
+    def show_task_center(self, uid):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        lang = user['language']
+        texts = {
+            'tr': "🧭 *Görev Merkezi*\n\nNe yapmak istiyorsun?",
+            'en': "🧭 *Task Center*\n\nWhat do you want to do?",
+            'pt_br': "🧭 *Central de Tarefas*\n\nO que você quer fazer?",
+        }
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '➕ Yeni Görev Oluştur', 'callback_data': 'task_center_create_simple'}],
+                [{'text': '📋 Kişisel Görevlerim', 'callback_data': 'task_center_personal'}],
+                [{'text': '🤖 Bot Görevlerim', 'callback_data': 'task_center_my_bot'}],
+                [{'text': '📢 Kanal Görevlerim', 'callback_data': 'task_center_my_channel'}],
+                [{'text': '👥 Grup Görevlerim', 'callback_data': 'task_center_my_group'}],
+                [{'text': '🏠 Menü', 'callback_data': 'main_menu'}],
+            ]
+        }
+        send_message(uid, texts.get(lang, texts['en']), reply_markup=keyboard)
+
+    def show_my_tasks_by_type(self, uid, task_type):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        lang = user['language']
+        labels = {
+            'tr': {'bot_start': '🤖 Bot Görevlerim', 'channel_join': '📢 Kanal Görevlerim', 'group_join': '👥 Grup Görevlerim'},
+            'en': {'bot_start': '🤖 My Bot Tasks', 'channel_join': '📢 My Channel Tasks', 'group_join': '👥 My Group Tasks'},
+            'pt_br': {'bot_start': '🤖 Minhas Tarefas de Bot', 'channel_join': '📢 Minhas Tarefas de Canal', 'group_join': '👥 Minhas Tarefas de Grupo'},
+        }
+        self.db.cur.execute(
+            "SELECT * FROM tasks WHERE created_by=? AND task_type=? AND status!='deleted' ORDER BY created_at DESC",
+            (uid, task_type)
+        )
+        tasks = [dict(r) for r in self.db.cur.fetchall()]
+
+        if not tasks:
+            no_text = {
+                'tr': "📭 Bu kategoride görevin yok.",
+                'en': "📭 No tasks in this category.",
+                'pt_br': "📭 Não há tarefas nesta categoria.",
+            }
+            send_message(uid, no_text.get(lang, no_text['en']), reply_markup={'inline_keyboard': [
+                [{'text': '🧭 Görev Merkezi', 'callback_data': 'task_center'}],
+                [{'text': '🏠 Menü', 'callback_data': 'main_menu'}],
+            ]})
+            return
+
+        header = f"{labels.get(lang, labels['en']).get(task_type, '📋 Görevlerim')} — {len(tasks)}\n"
+        icons = {'channel_join': '📢', 'group_join': '👥', 'bot_start': '🤖'}
+        st_ic = {'active': '🟢', 'inactive': '🔴', 'completed': '✅', 'deleted': '⛔'}
+        buttons = []
+        for t in tasks[:15]:
+            icon = icons.get(t['task_type'], '🎯')
+            si = st_ic.get(t['status'], '❓')
+            buttons.append([{
+                'text': f"{si}{icon} #{t['id']} {t['title']} ({t['current_participants']}/{t['max_participants']})",
+                'callback_data': f"mytask_{t['id']}"
+            }])
+        buttons.append([
+            {'text': '🧭 Görev Merkezi', 'callback_data': 'task_center'},
+            {'text': '🏠 Menü', 'callback_data': 'main_menu'},
+        ])
+        send_message(uid, header, reply_markup={'inline_keyboard': buttons})
+
+    def start_simple_task_creation(self, uid):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        self.states[uid] = {'action': 'task_create_name'}
+        send_message(uid, "🆕 Görev adı nedir?")
+
+    def show_personal_tasks(self, uid):
+        user = self.db.get_user(uid)
+        if not user:
+            return
+        tasks = self.db.get_personal_tasks(uid)
+        if not tasks:
+            send_message(uid, "📭 Henüz kişisel görevin yok.\n\n➕ Görev Oluştur ile hemen ekleyebilirsin.")
+            return
+        lines = ["📋 *Görevlerim*"]
+        for t in tasks[:20]:
+            lines.append(f"• #{t['id']} — *{t['title']}*\n  📝 {t['description']}\n  📅 Son: `{t['due_date']}`")
+        send_message(uid, "\n".join(lines))
 
     # ──────────────────────────────────────────
     #   GÖREV YAYINLA (HERKES)
@@ -2356,12 +2478,49 @@ How much to add?""",
                              f"👤 *YENİ ÜYE*\n{user['first_name']} (`{uid}`)\nRef: {referred_by or '—'}")
             except:
                 pass
-            self.show_lang_select(uid)
+            if text.startswith('/start'):
+                self.show_menu(uid, 'tr')
+            else:
+                self.show_lang_select(uid)
             return
 
         self.db.update_active(uid)
         state  = self.states.get(uid, {})
         action = state.get('action', '')
+
+        # Basit kişisel görev oluşturma adımları
+        if action == 'task_create_name':
+            title = text.strip()
+            if len(title) < 2:
+                send_message(uid, "❌ Görev adı çok kısa. Lütfen tekrar yazın:")
+                return
+            self.states[uid] = {'action': 'task_create_desc', 'title': title}
+            send_message(uid, "📝 Görev açıklaması?")
+            return
+
+        if action == 'task_create_desc':
+            desc = text.strip()
+            if len(desc) < 2:
+                send_message(uid, "❌ Açıklama çok kısa. Lütfen tekrar yazın:")
+                return
+            self.states[uid] = {**self.states.get(uid, {}), 'action': 'task_create_deadline', 'description': desc}
+            send_message(uid, "📅 Son teslim tarihi? (GG.AA.YYYY)")
+            return
+
+        if action == 'task_create_deadline':
+            deadline_raw = text.strip()
+            try:
+                deadline_dt = datetime.strptime(deadline_raw, '%d.%m.%Y')
+            except ValueError:
+                send_message(uid, "❌ Tarih formatı hatalı. Örn: 31.12.2026")
+                return
+            state = self.states.get(uid, {})
+            task_id = self.db.create_personal_task(uid, state.get('title','Görev'), state.get('description',''), deadline_dt.strftime('%d.%m.%Y'))
+            if uid in self.states:
+                del self.states[uid]
+            send_message(uid, f"✅ Görev kaydedildi!\n\n🆔 #{task_id}\n📌 {state.get('title','Görev')}\n📅 Son tarih: {deadline_dt.strftime('%d.%m.%Y')}")
+            self.show_personal_tasks(uid)
+            return
 
         # Aktif görev oluşturma adımları
         if action.startswith('pub_'):
@@ -2442,7 +2601,7 @@ How much to add?""",
     def process_cmd(self, uid, text, user):
         lang = user['language']
 
-        if text == '/start':
+        if text.startswith('/start'):
             self.show_menu(uid, lang)
         elif text in ['/tasks']   + all_menu_labels('menu_tasks'):
             self.show_tasks(uid)
@@ -2453,9 +2612,9 @@ How much to add?""",
         elif text in ['/invite','/referral']+ all_menu_labels('menu_invite'):
             self.show_invite(uid)
         elif text in all_menu_labels('menu_tasks_create'):
-            self.show_task_publish(uid)
+            self.show_task_center(uid)
         elif text in all_menu_labels('menu_my_tasks'):
-            self.show_my_tasks(uid)
+            self.show_personal_tasks(uid)
         elif text in ['/profile'] + all_menu_labels('menu_profile'):
             self.show_profile(uid)
         elif text in ['/settings']+ all_menu_labels('menu_settings'):
@@ -2700,6 +2859,36 @@ How much to add?""",
             if data.startswith('done_bot_'):
                 tid = int(data.split('_')[-1])
                 self.done_bot_task(uid, tid, cb_id)
+                return
+
+            if data == 'task_center':
+                answer_callback(cb_id)
+                self.show_task_center(uid)
+                return
+
+            if data == 'task_center_create_simple':
+                answer_callback(cb_id)
+                self.start_simple_task_creation(uid)
+                return
+
+            if data == 'task_center_personal':
+                answer_callback(cb_id)
+                self.show_personal_tasks(uid)
+                return
+
+            if data == 'task_center_my_bot':
+                answer_callback(cb_id)
+                self.show_my_tasks_by_type(uid, 'bot_start')
+                return
+
+            if data == 'task_center_my_channel':
+                answer_callback(cb_id)
+                self.show_my_tasks_by_type(uid, 'channel_join')
+                return
+
+            if data == 'task_center_my_group':
+                answer_callback(cb_id)
+                self.show_my_tasks_by_type(uid, 'group_join')
                 return
 
             # Diğer
