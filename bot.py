@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import base64
 import requests
 from datetime import datetime
 import threading
@@ -38,6 +39,7 @@ if not TOKEN:
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 FIREBASE_CREDENTIALS_JSON = os.environ.get("FIREBASE_CREDENTIALS_JSON", "")
+FIREBASE_CREDENTIALS_FILE = os.environ.get("FIREBASE_CREDENTIALS_FILE", "taskiz-2db5a-firebase-adminsdk-fbsvc-98e0792e57.json")
 FIREBASE_PROJECT_ID       = os.environ.get("FIREBASE_PROJECT_ID", "taskiz-2db5a")
 FIREBASE_DATABASE_URL     = os.environ.get("FIREBASE_DATABASE_URL", "https://taskiz-2db5a-default-rtdb.firebaseio.com/")
 
@@ -163,33 +165,60 @@ class FirebaseClient:
     SQLite  = Hizli okuma icin yerel onbellek.
     Her deploy sonrasi SQLite sifirlanir ama Firebase kalicidir.
     """
+    def _load_cred_dict(self):
+        raw = (FIREBASE_CREDENTIALS_JSON or '').strip()
+        if raw:
+            # 1) normal JSON
+            try:
+                return json.loads(raw)
+            except Exception:
+                pass
+            # 2) base64 JSON
+            try:
+                return json.loads(base64.b64decode(raw).decode('utf-8'))
+            except Exception:
+                pass
+            # 3) file path accidentally passed in JSON var
+            if os.path.exists(raw):
+                with open(raw, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            raise ValueError('FIREBASE_CREDENTIALS_JSON formatı geçersiz (json/base64/path değil)')
+
+        if FIREBASE_CREDENTIALS_FILE and os.path.exists(FIREBASE_CREDENTIALS_FILE):
+            with open(FIREBASE_CREDENTIALS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+
+        raise ValueError('Firebase credentials bulunamadı. FIREBASE_CREDENTIALS_JSON veya FIREBASE_CREDENTIALS_FILE ayarlayın')
+
     def __init__(self):
         self.enabled = False
         self.fs   = None
         self._queue  = []
         self._qlock  = threading.Lock()
 
-        # FIREBASE_DATABASE_URL is module-level env var
-        cred_json = FIREBASE_CREDENTIALS_JSON or ''
-        project   = FIREBASE_PROJECT_ID or ''
-
-        if not cred_json or not project:
-            print('WARNING Firebase env vars eksik -- sadece SQLite kullanilacak')
+        project = FIREBASE_PROJECT_ID or ''
+        if not project:
+            print('WARNING FIREBASE_PROJECT_ID eksik -- sadece SQLite kullanilacak')
             return
+
         try:
-            cred = credentials.Certificate(json.loads(cred_json))
+            cred_dict = self._load_cred_dict()
+            cred = credentials.Certificate(cred_dict)
             if not firebase_admin._apps:
                 opts = {'projectId': project}
-                if FIREBASE_DATABASE_URL:  # noqa
+                if FIREBASE_DATABASE_URL:
                     opts['databaseURL'] = FIREBASE_DATABASE_URL
                 firebase_admin.initialize_app(cred, opts)
             self.fs = firestore.client()
+            # lightweight probe
+            list(self.fs.collection('_healthcheck').limit(1).stream())
             self.enabled = True
             print('Firebase baglandi (Firestore)')
             t = threading.Thread(target=self._flush_loop, daemon=True)
             t.start()
         except Exception as e:
             print(f'Firebase baglanti hatasi: {e}')
+            print('Firebase devre disi birakildi, bot SQLite ile calisacak')
 
     def _flush_loop(self):
         while True:
